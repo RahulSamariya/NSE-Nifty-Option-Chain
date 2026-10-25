@@ -12,7 +12,7 @@ the dashboard, the worker and the web app are untouched.
 |---|---|
 | A fresh, fully formatted workbook right now | Double-click **`excel/excel_now.bat`** |
 | An Excel sheet that keeps updating by itself | Double-click **`excel/excel_live.bat`** |
-| Drive it from the web app's **Excel** button | Double-click **`excel/excel_server.bat`** |
+| Drive the local Excel automation from a browser (optional) | Double-click **`excel/excel_server.bat`** |
 
 All of them use the same baked-in defaults: **NIFTY → nearest expiry → the FULL
 chain (all strikes)**.
@@ -63,17 +63,22 @@ open. You never reconfigure it.
 
 ---
 
-## 🌐 Excel button in the web app
+## 🌐 Local helper (optional/legacy)
 
-A browser cannot start Excel or touch local files, so the web app talks to a tiny
-local helper instead:
+The web app no longer needs a local helper: its header **Export Excel** button
+opens a hosted panel (symbol, expiry, strike range, import fields, refresh,
+auto-refresh interval, download) that builds the workbook on the server. Nothing
+in the deployed site depends on this folder.
+
+The helper still exists for developers who want to drive the **local** Excel
+automation from a browser on the same PC:
 
 ```bash
 python excel\excel_server.py        # or double-click excel\excel_server.bat
 ```
 
 It listens on **`http://127.0.0.1:8765`** only (loopback, not your LAN, not the
-internet). Open the web app, click **Excel** in the header, and you get:
+internet) and offers:
 
 * **Open live workbook** — starts Excel on this PC with the self-refreshing sheet
 * **Download .xlsx** — a fresh, fully styled snapshot, saved by the browser
@@ -84,9 +89,9 @@ Changing the timer only restarts the hidden background fetcher. Excel keeps
 re-reading its local copy every minute, so **you never have to close or rebuild
 the workbook** when you change it.
 
-If the panel says *helper is not running*, start `excel\excel_server.py` and
-leave that window open. Without the helper, the web app still works — only the
-Excel panel is unavailable, and the two `.bat` files above work as before.
+The dashboard does not call this helper, so no "helper is not running" dialog can
+block a normal visitor. The two `.bat` files above work exactly as before, with or
+without it.
 
 Helper endpoints (useful for debugging):
 
@@ -158,7 +163,7 @@ itself.
 | File locked / "being used by another process" | Close that workbook — or use `excel_live.bat`, which updates the open sheet |
 | Sheet stopped updating | The workbook was closed (that also stops the helper). Run `excel_live.bat` again — it reuses the same files |
 | Helper process left behind | `python excel/excel_auto.py --stop` |
-| Web panel says "helper is not running" | Start `excel/excel_server.bat` and keep it open; it binds 127.0.0.1:8765 |
+| Web panel says "helper is not running" (only the optional local helper) | Start `excel/excel_server.bat` and keep it open; it binds 127.0.0.1:8765. The dashboard's **Export Excel** panel does not need it |
 | `could not fetch from NSE` | NSE rate-limiting or a blocked session. The script retries 3× with a fresh session; wait a minute and re-run |
 | Data looks stale | Check `UPDATED (IST)` in column X. If it doesn't move, re-run `excel_live.bat` |
 | Expiry rolls over (weekly) | Nothing to do — the data keeps flowing and the `EXPIRY` cell shows the new date; only the file *name* keeps the old label |
@@ -169,10 +174,10 @@ itself.
 
 ```
 excel_auto.py            # fetch -> CSV/XLSX, live workbook, hidden updater
-excel_server.py          # local helper for the web app's Excel button
+excel_server.py          # optional local helper for the Excel automation
 excel_now.bat            # one-click export
 excel_live.bat           # one-click auto-refresh
-excel_server.bat         # start the helper for the web app
+excel_server.bat         # start the optional helper
 requirements-excel.txt   # requirements.txt + pywin32
 README.md                # this file
 ```

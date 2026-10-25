@@ -1,0 +1,11 @@
+# NSE trading holidays — one date per line, ISO format: YYYY-MM-DD
+#
+# The worker skips these dates in addition to weekends (Mon-Fri 09:15-15:35 IST).
+# Keep this file in sync with the official NSE holiday list:
+#   https://www.nseindia.com/resources/exchange-communication-holidays
+#
+# Only real, verified exchange holidays belong here. An empty or missing file
+# means "weekdays only" and is reported in the worker's startup log.
+#
+# Example (uncomment only after verifying the date on the NSE page above):
+# 2026-01-26   # Republic Day

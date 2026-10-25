@@ -1,5 +1,12 @@
 /** Strict, side-effect-free validation for the public option-chain API. */
 
+import {
+  parseFieldGroups,
+  parseStrikeRange,
+  type FieldGroup,
+  type StrikeRange,
+} from "./chain-selection";
+
 export type OutputFormat = "json" | "csv";
 
 export interface OptionChainQuery {
@@ -7,11 +14,22 @@ export interface OptionChainQuery {
   /** null means "newest snapshot for this symbol, any expiry". */
   expiry: string | null;
   format: OutputFormat;
+  range: StrikeRange;
+  fields: FieldGroup[];
 }
 
-export type QueryValidation =
-  | { ok: true; value: OptionChainQuery }
+export interface HistoryQuery {
+  symbol: string;
+  expiry: string;
+  limit: number;
+}
+
+export type QueryValidation<T> =
+  | { ok: true; value: T }
   | { ok: false; status: number; code: string; message: string };
+
+export const MAX_HISTORY_LIMIT = 240;
+export const DEFAULT_HISTORY_LIMIT = 60;
 
 const SYMBOL_RE = /^[A-Za-z0-9&._-]{1,20}$/;
 const EXPIRY_RE = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/;
@@ -61,51 +79,95 @@ export function expiryVariants(canonical: string): string[] {
   return [...new Set([`${day}-${month}-${year}`, `${String(day).padStart(2, "0")}-${month}-${year}`])];
 }
 
-export function parseOptionChainQuery(searchParams: URLSearchParams): QueryValidation {
-  const rawSymbol = (searchParams.get("symbol") ?? "").trim();
-  if (!rawSymbol) {
-    return {
-      ok: false,
-      status: 400,
-      code: "missing_symbol",
-      message: "symbol is required, e.g. ?symbol=NIFTY",
-    };
+function fail(status: number, code: string, message: string) {
+  return { ok: false as const, status, code, message };
+}
+
+function validateSymbol(raw: string) {
+  const symbol = raw.trim();
+  if (!symbol) {
+    return fail(400, "missing_symbol", "symbol is required, e.g. ?symbol=NIFTY");
   }
-  if (!SYMBOL_RE.test(rawSymbol)) {
-    return {
-      ok: false,
-      status: 400,
-      code: "invalid_symbol",
-      message: "symbol must be 1-20 characters: letters, digits, & . _ or -",
-    };
+  if (!SYMBOL_RE.test(symbol)) {
+    return fail(400, "invalid_symbol", "symbol must be 1-20 characters: letters, digits, & . _ or -");
   }
+  return { ok: true as const, value: symbol.toUpperCase() };
+}
+
+export function parseOptionChainQuery(
+  searchParams: URLSearchParams,
+): QueryValidation<OptionChainQuery> {
+  const symbol = validateSymbol(searchParams.get("symbol") ?? "");
+  if (!symbol.ok) return symbol;
 
   const rawExpiry = (searchParams.get("expiry") ?? "").trim();
   let expiry: string | null = null;
   if (rawExpiry) {
     expiry = canonicalExpiry(rawExpiry);
     if (!expiry) {
-      return {
-        ok: false,
-        status: 400,
-        code: "invalid_expiry",
-        message: "expiry must be a real date in the form 27-Oct-2026",
-      };
+      return fail(400, "invalid_expiry", "expiry must be a real date in the form 27-Oct-2026");
     }
   }
 
   const rawFormat = (searchParams.get("format") ?? "json").trim().toLowerCase();
   if (rawFormat !== "json" && rawFormat !== "csv") {
-    return {
-      ok: false,
-      status: 400,
-      code: "invalid_format",
-      message: "format must be one of: json, csv",
-    };
+    return fail(400, "invalid_format", "format must be one of: json, csv");
+  }
+
+  const range = parseStrikeRange(searchParams.get("range"));
+  if (!range) {
+    return fail(400, "invalid_range", "range must be one of: all, 10, 20, 30");
+  }
+
+  const fields = parseFieldGroups(searchParams.get("fields"));
+  if (!fields) {
+    return fail(
+      400,
+      "invalid_fields",
+      "fields must be a comma-separated list of: oi, oi_change, volume, iv, ltp, price_change, bid_ask",
+    );
   }
 
   return {
     ok: true,
-    value: { symbol: rawSymbol.toUpperCase(), expiry, format: rawFormat },
+    value: { symbol: symbol.value, expiry, format: rawFormat, range, fields },
   };
+}
+
+/** `GET /api/option-chain/expiries?symbol=NIFTY` */
+export function parseSymbolQuery(
+  searchParams: URLSearchParams,
+): QueryValidation<{ symbol: string }> {
+  const symbol = validateSymbol(searchParams.get("symbol") ?? "");
+  if (!symbol.ok) return symbol;
+  return { ok: true, value: { symbol: symbol.value } };
+}
+
+/** `GET /api/option-chain/history?symbol=NIFTY&expiry=27-Oct-2026&limit=60` */
+export function parseHistoryQuery(
+  searchParams: URLSearchParams,
+): QueryValidation<HistoryQuery> {
+  const symbol = validateSymbol(searchParams.get("symbol") ?? "");
+  if (!symbol.ok) return symbol;
+
+  const rawExpiry = (searchParams.get("expiry") ?? "").trim();
+  if (!rawExpiry) {
+    return fail(400, "missing_expiry", "expiry is required for history, e.g. 27-Oct-2026");
+  }
+  const expiry = canonicalExpiry(rawExpiry);
+  if (!expiry) {
+    return fail(400, "invalid_expiry", "expiry must be a real date in the form 27-Oct-2026");
+  }
+
+  const rawLimit = (searchParams.get("limit") ?? "").trim();
+  let limit = DEFAULT_HISTORY_LIMIT;
+  if (rawLimit) {
+    const parsed = Number(rawLimit);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_HISTORY_LIMIT) {
+      return fail(400, "invalid_limit", `limit must be a whole number between 1 and ${MAX_HISTORY_LIMIT}`);
+    }
+    limit = parsed;
+  }
+
+  return { ok: true, value: { symbol: symbol.value, expiry, limit } };
 }

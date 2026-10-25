@@ -1,165 +1,294 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Header } from "@/components/Header";
 import { MetricsBar } from "@/components/MetricsBar";
 import { OptionChainTable } from "@/components/OptionChainTable";
 import { ChartsView } from "@/components/ChartsView";
 import { ExcelPanel } from "@/components/ExcelPanel";
-import { OptionChainRecord, OptionChainHistoryPoint } from "@/types/option-chain";
-import { getSnapshotStatus, isOptionChainRecord, supabase } from "@/lib/supabase";
+import {
+  OptionChainHistoryPoint,
+  OptionChainRecord,
+} from "@/types/option-chain";
+import {
+  type ChainMeta,
+  type ChainResponse,
+  type ExpiriesResponse,
+  type ExpiryOption,
+  type HistoryResponse,
+  type RefreshMinutes,
+  type UiStatus,
+} from "@/lib/api-types";
+import {
+  DEFAULT_FIELD_GROUPS,
+  DEFAULT_STRIKE_RANGE,
+  STRIKE_RANGE_OPTIONS,
+  strikeRadius,
+  type FieldGroup,
+  type StrikeRange,
+} from "@/lib/chain-selection";
+import { normalizeOptionChainRecord } from "@/lib/option-chain-record";
+import { RefreshGuard, shouldRefreshOnReturn } from "@/lib/refresh-guard";
 import { AlertCircle, BarChart3, Download, RefreshCw, Table, SlidersHorizontal } from "lucide-react";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
-const STRIKE_RANGES = [
-  { label: "10 Strikes", value: 10 },
-  { label: "20 Strikes", value: 20 },
-  { label: "30 Strikes", value: 30 },
-  { label: "All Strikes", value: 0 },
-];
+
+async function readError(response: Response, fallback: string): Promise<string> {
+  const body = (await response.json().catch(() => null)) as
+    | { error?: { message?: string } }
+    | null;
+  return body?.error?.message || fallback;
+}
 
 export default function Home() {
   const [selectedSymbol, setSelectedSymbol] = useState("NIFTY");
+  /** null = newest snapshot for the symbol. */
+  const [selectedExpiry, setSelectedExpiry] = useState<string | null>(null);
+  const [expiries, setExpiries] = useState<ExpiryOption[]>([]);
+
   const [data, setData] = useState<OptionChainRecord | null>(null);
+  const [meta, setMeta] = useState<ChainMeta | null>(null);
   const [history, setHistory] = useState<OptionChainHistoryPoint[]>([]);
+
   const [activeTab, setActiveTab] = useState<"table" | "charts">("table");
-  const [strikeRange, setStrikeRange] = useState(15);
+  const [strikeRange, setStrikeRange] = useState<StrikeRange>(DEFAULT_STRIKE_RANGE);
+  const [fieldGroups, setFieldGroups] = useState<FieldGroup[]>(DEFAULT_FIELD_GROUPS);
+
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshMinutes, setRefreshMinutes] = useState<RefreshMinutes>(1);
+
   const [isLoading, setIsLoading] = useState(true);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
+
   const [excelOpen, setExcelOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
-  const requestId = useRef(0);
-  const activeRequest = useRef<{ token: number; symbol: string } | null>(null);
+
+  // Created once; survives renders and owns the AbortController.
+  const [guard] = useState(() => new RefreshGuard());
 
   const fetchData = useCallback(async () => {
-    // One read at a time per symbol: the 30 s poll and the Refresh button share
-    // the same guard, so a slow query can never overlap another one.
-    if (activeRequest.current?.symbol === selectedSymbol) return;
+    const requestKey = `${selectedSymbol}|${selectedExpiry ?? "newest"}`;
+    // One read at a time per symbol+expiry: polling, Refresh Now and the panel
+    // all share this guard, so a slow query can never overlap another one.
+    const ticket = guard.begin(requestKey);
+    if (!ticket) return;
+    const { signal } = ticket;
 
-    const currentRequestId = ++requestId.current;
-    activeRequest.current = { token: currentRequestId, symbol: selectedSymbol };
     setIsLoading(true);
-    setConnectionError(null);
+    setError(null);
+
     try {
-      if (!supabase) {
-        throw new Error("Supabase is not configured. Set the public URL and anon key.");
-      }
+      const params = new URLSearchParams({
+        symbol: selectedSymbol,
+        format: "json",
+        range: "all",
+        fields: "all",
+      });
+      if (selectedExpiry) params.set("expiry", selectedExpiry);
 
-      const { data: liveRows, error: liveError } = await supabase
-        .from("option_chain_live")
-        .select("*")
-        .eq("symbol", selectedSymbol)
-        .order("updated_at", { ascending: false })
-        .limit(50);
-      if (liveError) throw new Error(`Snapshot query failed: ${liveError.message}`);
+      const response = await fetch(`/api/option-chain?${params.toString()}`, {
+        cache: "no-store",
+        signal,
+      });
 
-      const latest = Array.isArray(liveRows)
-        ? liveRows.find((row) => isOptionChainRecord(row, selectedSymbol))
-        : null;
-      if (currentRequestId !== requestId.current) return;
-      setData((latest as OptionChainRecord | undefined) ?? null);
-      setHistoryError(null);
-
-      if (!latest) {
-        setHistory([]);
+      if (response.status === 404 && selectedExpiry) {
+        // The selected expiry no longer exists: drop back to the newest stored
+        // snapshot instead of showing an empty page.
+        setSelectedExpiry(null);
         return;
       }
+      if (!response.ok) {
+        throw new Error(await readError(response, `Snapshot request failed (HTTP ${response.status}).`));
+      }
 
-      const { data: historyRows, error: historyQueryError } = await supabase
-        .from("option_chain_history")
-        .select("*")
-        .eq("symbol", selectedSymbol)
-        .eq("expiry", latest.expiry)
-        .order("created_at", { ascending: false })
-        .limit(30);
-      if (currentRequestId !== requestId.current) return;
-      if (historyQueryError) {
-        setHistory([]);
-        setHistoryError(`History query failed: ${historyQueryError.message}`);
-      } else {
-        setHistory((historyRows ?? []).reverse() as OptionChainHistoryPoint[]);
+      const body = (await response.json()) as ChainResponse;
+      const record = normalizeOptionChainRecord({
+        symbol: body.meta.symbol,
+        expiry: body.meta.expiry,
+        spot: body.meta.spot,
+        pcr: body.meta.pcr,
+        max_pain: body.meta.max_pain,
+        total_ce_oi: body.meta.total_ce_oi,
+        total_pe_oi: body.meta.total_pe_oi,
+        nse_timestamp: body.meta.nse_timestamp,
+        updated_at: body.meta.snapshot_updated_at,
+        raw_data: body.chain,
+      });
+
+      if (!record) {
+        throw new Error("The API returned a snapshot that failed validation.");
       }
-    } catch (error) {
-      if (currentRequestId === requestId.current) {
-        setConnectionError(error instanceof Error ? error.message : "Supabase connection failed.");
+
+      setData(record);
+      setMeta(body.meta);
+      setLastRefreshAt(new Date());
+
+      // History is a nice-to-have: a failure there must not hide the chain.
+      const historyParams = new URLSearchParams({
+        symbol: record.symbol,
+        expiry: record.expiry,
+        limit: "60",
+      });
+      try {
+        const historyResponse = await fetch(
+          `/api/option-chain/history?${historyParams.toString()}`,
+          { cache: "no-store", signal },
+        );
+        if (!historyResponse.ok) {
+          throw new Error(
+            await readError(historyResponse, `History request failed (HTTP ${historyResponse.status}).`),
+          );
+        }
+        const historyBody = (await historyResponse.json()) as HistoryResponse;
+        setHistory(Array.isArray(historyBody.points) ? historyBody.points : []);
+        setHistoryError(null);
+      } catch (historyFailure) {
+        if (signal.aborted) return;
         setHistory([]);
+        setHistoryError(
+          historyFailure instanceof Error ? historyFailure.message : "History is unavailable.",
+        );
       }
+    } catch (failure) {
+      if (signal.aborted) return;
+      setError(failure instanceof Error ? failure.message : "Could not reach the snapshot API.");
+      setHistory([]);
     } finally {
-      if (activeRequest.current?.token === currentRequestId) activeRequest.current = null;
-      if (currentRequestId === requestId.current) {
-        setIsLoading(false);
-        setLastCheckedAt(new Date());
-      }
+      guard.finish(ticket.key);
+      if (!signal.aborted) setIsLoading(false);
     }
-  }, [selectedSymbol]);
+  }, [selectedSymbol, selectedExpiry, guard]);
 
+  // Chain + history whenever the symbol or expiry changes.
   useEffect(() => {
-    const initialFetch = window.setTimeout(() => {
+    if (typeof window === "undefined") return;
+    const timer = window.setTimeout(() => {
       void fetchData();
     }, 0);
-    const interval = setInterval(() => {
-      fetchData();
-    }, 30000); // 30 second auto-poll
-    return () => {
-      window.clearTimeout(initialFetch);
-      clearInterval(interval);
-    };
+    return () => window.clearTimeout(timer);
   }, [fetchData]);
+
+  // Available expiries are read from the database, never invented.
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const load = async () => {
+      try {
+        const params = new URLSearchParams({ symbol: selectedSymbol });
+        const response = await fetch(`/api/option-chain/expiries?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (cancelled) return;
+        if (!response.ok) {
+          setExpiries([]);
+          return;
+        }
+        const body = (await response.json()) as ExpiriesResponse;
+        setExpiries(Array.isArray(body.expiries) ? body.expiries : []);
+      } catch {
+        if (!cancelled) setExpiries([]);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [selectedSymbol]);
+
+  // Timed polling. Pauses in a hidden tab, catches up on return, and restarts
+  // cleanly when the interval or the toggle changes.
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") void fetchData();
+    }, refreshMinutes * 60_000);
+    return () => window.clearInterval(id);
+  }, [autoRefresh, refreshMinutes, fetchData]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      const due = shouldRefreshOnReturn(
+        lastRefreshAt?.getTime() ?? null,
+        refreshMinutes * 60_000,
+        Date.now(),
+      );
+      if (due) void fetchData();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [autoRefresh, refreshMinutes, lastRefreshAt, fetchData]);
+
+  useEffect(() => {
+    return () => guard.abort();
+  }, [guard]);
 
   const visibleData = data?.symbol === selectedSymbol ? data : null;
-  const status = isLoading && !visibleData
-    ? "Loading"
-    : visibleData
-    ? getSnapshotStatus(visibleData.nse_timestamp)
-    : "Unavailable";
+  const status: UiStatus = error
+    ? "Error"
+    : isLoading && !visibleData
+      ? "Loading"
+      : meta
+        ? meta.status
+        : "Unavailable";
 
-  // Manual refresh: same guarded read as the poll, but with its own spinner so
-  // the button does not animate on every background poll.
-  const [isManualRefresh, setIsManualRefresh] = useState(false);
-  const handleRefresh = useCallback(async () => {
-    setIsManualRefresh(true);
-    try {
-      await fetchData();
-    } finally {
-      setIsManualRefresh(false);
-    }
-  }, [fetchData]);
+  const strikeRadiusValue = strikeRadius(strikeRange);
+  const strikesShown = useMemo(() => {
+    if (!visibleData) return 0;
+    if (strikeRadiusValue === 0) return visibleData.raw_data.length;
+    return Math.min(visibleData.raw_data.length, strikeRadiusValue * 2 + 1);
+  }, [visibleData, strikeRadiusValue]);
 
-  /**
-   * Download the whole chain (every strike, not just the visible ATM window)
-   * as a three-sheet workbook built server-side from the stored snapshot.
-   */
+  const handleSelectSymbol = useCallback((symbol: string) => {
+    setSelectedSymbol(symbol);
+    setSelectedExpiry(null);
+    setData(null);
+    setMeta(null);
+    setHistory([]);
+    setError(null);
+    setHistoryError(null);
+  }, []);
+
+  const handleSelectExpiry = useCallback((expiry: string | null) => {
+    setSelectedExpiry(expiry);
+    setData(null);
+    setMeta(null);
+    setHistory([]);
+    setError(null);
+    setHistoryError(null);
+  }, []);
+
   const downloadExcel = useCallback(async () => {
-    if (!visibleData || isExporting) return;
+    if (!visibleData || !meta || isExporting) return;
     setIsExporting(true);
     setExportError(null);
     try {
       const params = new URLSearchParams({
-        symbol: visibleData.symbol,
-        expiry: visibleData.expiry,
+        symbol: meta.symbol,
+        expiry: meta.expiry,
+        range: strikeRange,
+        fields: fieldGroups.join(","),
       });
       const response = await fetch(`/api/option-chain/export?${params.toString()}`, {
         cache: "no-store",
       });
       if (!response.ok) {
-        let message = `Export failed (HTTP ${response.status}).`;
-        try {
-          const body = (await response.json()) as { error?: { message?: string } };
-          if (body?.error?.message) message = body.error.message;
-        } catch {
-          // non-JSON error body: keep the generic message
-        }
-        throw new Error(message);
+        throw new Error(await readError(response, `Export failed (HTTP ${response.status}).`));
       }
 
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") ?? "";
       const match = disposition.match(/filename="?([^";]+)"?/i);
       const fileName =
-        match?.[1] ?? `${visibleData.symbol}_${visibleData.expiry}_snapshot.xlsx`;
+        match?.[1] ?? `${meta.symbol}_${meta.expiry}_snapshot.xlsx`;
 
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -169,34 +298,24 @@ export default function Home() {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-    } catch (error) {
+    } catch (failure) {
       setExportError(
-        error instanceof Error ? error.message : "Could not download the Excel workbook.",
+        failure instanceof Error ? failure.message : "Could not download the Excel workbook.",
       );
     } finally {
       setIsExporting(false);
     }
-  }, [visibleData, isExporting]);
+  }, [visibleData, meta, isExporting, strikeRange, fieldGroups]);
 
-  const checkedAtLabel = lastCheckedAt
-    ? lastCheckedAt.toLocaleTimeString("en-GB", {
-        timeZone: "Asia/Kolkata",
-        hour12: false,
-      })
+  const checkedAtLabel = lastRefreshAt
+    ? lastRefreshAt.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false })
     : null;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500 selection:text-zinc-950">
       <Header
         selectedSymbol={selectedSymbol}
-        onSelectSymbol={(sym) => {
-          requestId.current += 1;
-          setSelectedSymbol(sym);
-          setData(null);
-          setHistory([]);
-          setConnectionError(null);
-          setHistoryError(null);
-        }}
+        onSelectSymbol={handleSelectSymbol}
         symbols={SYMBOLS}
         expiry={visibleData?.expiry || ""}
         nseTimestamp={visibleData?.nse_timestamp ?? null}
@@ -207,7 +326,6 @@ export default function Home() {
       />
 
       <main className="max-w-7xl mx-auto px-4 py-4">
-        {/* Top Analytics Metrics */}
         {visibleData && (
           <MetricsBar
             symbol={visibleData.symbol}
@@ -219,32 +337,39 @@ export default function Home() {
           />
         )}
 
-        {connectionError && (
+        {error && (
           <div role="alert" className="my-4 flex items-start gap-3 border border-rose-900/70 bg-rose-950/30 p-4 text-sm text-rose-200">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
-              <p className="font-semibold">Supabase connection error</p>
-              <p className="mt-1 text-rose-200/80">{connectionError}</p>
-              {visibleData && <p className="mt-1 text-rose-200/80">Showing the last loaded NSE snapshot; its source status is shown above.</p>}
+              <p className="font-semibold">Snapshot API error</p>
+              <p className="mt-1 text-rose-200/80">{error}</p>
+              {visibleData && (
+                <p className="mt-1 text-rose-200/80">
+                  Showing the last snapshot that loaded successfully; its NSE timestamp is shown
+                  above. No values were invented.
+                </p>
+              )}
             </div>
           </div>
         )}
 
         {historyError && (
-          <div role="alert" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
-            {historyError}
+          <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
+            Intraday history is unavailable: {historyError}
           </div>
         )}
 
-        {!isLoading && !connectionError && !visibleData && (
+        {!isLoading && !error && !visibleData && (
           <div className="my-6 border border-zinc-800 bg-zinc-900/40 p-6 text-sm text-zinc-300">
-            No valid NSE snapshot is available for {selectedSymbol}.
+            No valid NSE snapshot is available for {selectedSymbol}
+            {selectedExpiry ? ` · ${selectedExpiry}` : ""}.
           </div>
         )}
 
         {visibleData && status === "Stale" && (
           <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
             This snapshot is stale. Source timestamp: {visibleData.nse_timestamp || "unavailable"}.
+            Refreshing re-reads the stored snapshot; only the NSE collector can make it newer.
           </div>
         )}
 
@@ -254,9 +379,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab & Filter Controls */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 my-4 pb-3 border-b border-zinc-800">
-          {/* View Mode Tabs */}
+        {/* Tab & filter controls */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 my-4 pb-3 border-b border-zinc-800">
           <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1 self-start">
             <button
               onClick={() => setActiveTab("table")}
@@ -282,46 +406,47 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Strike Range Selector + snapshot actions */}
-          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-            {activeTab === "table" && (
-              <div className="flex items-center gap-2 text-xs">
-                <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-zinc-400">Strikes Around ATM:</span>
-                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-md p-0.5">
-                  {STRIKE_RANGES.map((rng) => (
-                    <button
-                      key={rng.label}
-                      onClick={() => setStrikeRange(rng.value)}
-                      className={`px-2 py-1 text-[11px] font-medium rounded transition-all ${
-                        strikeRange === rng.value
-                          ? "bg-zinc-800 text-emerald-400"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      {rng.label}
-                    </button>
-                  ))}
-                </div>
+          <div className="flex flex-wrap items-center gap-2 self-start xl:self-auto">
+            <div className="flex items-center gap-2 text-xs">
+              <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
+              <span className="text-zinc-400">Strikes:</span>
+              <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-md p-0.5">
+                {STRIKE_RANGE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => setStrikeRange(option.value)}
+                    title={option.value === "all" ? "Every strike in the snapshot" : option.label}
+                    className={`px-2 py-1 text-[11px] font-medium rounded transition-all ${
+                      strikeRange === option.value
+                        ? "bg-zinc-800 text-emerald-400"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {option.value === "all" ? "All" : option.value}
+                  </button>
+                ))}
               </div>
-            )}
+              <span className="hidden sm:inline text-[11px] text-zinc-500">
+                {strikesShown} shown
+              </span>
+            </div>
 
             <button
               type="button"
-              onClick={() => void handleRefresh()}
-              disabled={isManualRefresh || (isLoading && !visibleData)}
-              title="Re-read the newest stored snapshot from Supabase. This does not contact NSE."
+              onClick={() => void fetchData()}
+              disabled={isLoading}
+              title="Re-read the newest stored snapshot from the hosted API. This does not contact NSE."
               className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition-colors hover:border-zinc-700 hover:text-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isManualRefresh ? "animate-spin" : ""}`} />
-              {isManualRefresh ? "Refreshing…" : "Refresh Data"}
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              {isLoading ? "Refreshing…" : "Refresh Data"}
             </button>
 
             <button
               type="button"
               onClick={() => void downloadExcel()}
               disabled={!visibleData || isExporting}
-              title="Download every strike for this symbol and expiry as a three-sheet .xlsx workbook."
+              title="Download the selected symbol, expiry, strike range and import fields as a three-sheet .xlsx workbook."
               className="flex items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className={`w-3.5 h-3.5 ${isExporting ? "animate-pulse" : ""}`} />
@@ -332,8 +457,8 @@ export default function Home() {
 
         <p className="-mt-1 mb-4 text-[11px] text-zinc-500">
           {checkedAtLabel
-            ? `Last checked ${checkedAtLabel} IST · re-reads the stored Supabase snapshot (not a new NSE fetch).`
-            : "Not checked yet."}
+            ? `Last refresh ${checkedAtLabel} IST · ${autoRefresh ? `auto every ${refreshMinutes} min (paused when this tab is hidden)` : "auto-refresh off"} · reads the hosted API, not NSE.`
+            : "Waiting for the first snapshot…"}
         </p>
 
         {exportError && (
@@ -346,30 +471,55 @@ export default function Home() {
           </div>
         )}
 
-        {/* Content View */}
         {visibleData && (
           <div>
             {activeTab === "table" ? (
               <OptionChainTable
-                rows={visibleData.raw_data || []}
+                rows={visibleData.raw_data}
                 spot={visibleData.spot}
-                strikeRange={strikeRange}
+                strikeRange={strikeRadiusValue}
               />
             ) : (
               <ChartsView
-                rows={visibleData.raw_data || []}
+                rows={visibleData.raw_data}
                 spot={visibleData.spot}
                 history={history}
               />
             )}
           </div>
         )}
-
       </main>
 
-      {excelOpen && <ExcelPanel onClose={() => setExcelOpen(false)} />}
+      {excelOpen && (
+        <ExcelPanel
+          symbols={SYMBOLS}
+          symbol={selectedSymbol}
+          onSymbolChange={handleSelectSymbol}
+          expiries={expiries}
+          selectedExpiry={selectedExpiry}
+          onExpiryChange={handleSelectExpiry}
+          strikeRange={strikeRange}
+          onStrikeRangeChange={setStrikeRange}
+          fieldGroups={fieldGroups}
+          onFieldGroupsChange={setFieldGroups}
+          autoRefresh={autoRefresh}
+          onAutoRefreshChange={setAutoRefresh}
+          refreshMinutes={refreshMinutes}
+          onRefreshMinutesChange={setRefreshMinutes}
+          status={status}
+          nseTimestamp={visibleData?.nse_timestamp ?? null}
+          snapshotExpiry={visibleData?.expiry ?? null}
+          strikeCount={visibleData?.raw_data.length ?? 0}
+          lastRefreshAt={lastRefreshAt}
+          isLoading={isLoading}
+          isExporting={isExporting}
+          exportError={exportError}
+          onRefresh={fetchData}
+          onDownload={downloadExcel}
+          onClose={() => setExcelOpen(false)}
+        />
+      )}
 
-      {/* Footer */}
       <footer className="border-t border-zinc-800/80 mt-12 py-6 text-center text-xs text-zinc-500">
         <p>NSE Option Chain Quantitative Dashboard &copy; 2026</p>
         <p className="mt-1">For personal research and educational purposes only.</p>

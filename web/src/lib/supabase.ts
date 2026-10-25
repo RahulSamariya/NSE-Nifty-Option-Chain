@@ -1,13 +1,11 @@
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-
-export const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey)
-    : null;
-
+/**
+ * Legacy compatibility surface.
+ *
+ * The dashboard no longer talks to Supabase from the browser: it reads the
+ * hosted read-only API (`/api/option-chain*`), so no credential ever reaches
+ * the client. This module keeps the formatting helper and the shared type
+ * re-exports used by the presentational components.
+ */
 export {
   getSnapshotFreshness,
   getSnapshotStatus,

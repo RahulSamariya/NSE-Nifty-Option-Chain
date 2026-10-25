@@ -7,7 +7,7 @@ they share a single scraper/parser so the numbers always agree.
 | # | Tool | Folder | What it is | Best for |
 |---|---|---|---|---|
 | 1 | **Streamlit dashboard** | [`dashboard/`](dashboard/) | Local Python app with the option chain table, Plotly charts, Max Pain / PCR and SQLite history | Research on your own PC |
-| 2 | **Web app** | [`web/`](web/) | Next.js 15 + Supabase dashboard you can open from any device | Phone / cloud access |
+| 2 | **Web app** | [`web/`](web/) | Next.js 16 + Supabase dashboard you can open from any device | Phone / cloud access |
 | 3 | **Excel automation** | [`excel/`](excel/) | One click → a formatted `.xlsx`, or a workbook that refreshes itself every minute | Spreadsheet work |
 
 ```
@@ -51,20 +51,30 @@ npm install
 npm run dev                            # http://localhost:3000
 ```
 
-The worker needs a `.env` in the **repository root**:
+The collector needs `SUPABASE_URL` and `SUPABASE_KEY` (**service_role**) in its
+environment, or in a `.env` in the **repository root** on a development machine:
 
 ```ini
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service_role key>
 ```
 
+For a scheduler, run one cycle at a time instead of the 24/7 daemon:
+
+```bash
+python worker/bridge_worker.py --once --symbol NIFTY BANKNIFTY
+```
+
 Then apply [`db/schema.sql`](db/schema.sql) to a new Supabase project (or
 [`db/supabase_security_migration.sql`](db/supabase_security_migration.sql) for an
 existing one). Anonymous users can read; only `service_role` can write.
 
-The web app also has a **Live Excel** button in its header (local helper), plus a
-**Download Excel** button above the chain and a read-only snapshot API. See
-below.
+The web app reads its own hosted API, so it only needs the **anon** key
+(`SUPABASE_URL` + `SUPABASE_ANON_KEY`) in the server environment. The **Export
+Excel** panel offers symbol, expiry, strike range, import fields, refresh now,
+auto-refresh intervals and a real `.xlsx` download — no local helper required.
+See [`docs/HOSTED_DEPLOYMENT.md`](docs/HOSTED_DEPLOYMENT.md) for deploying the
+collector and verifying it with `/api/health`.
 
 → Full details: [`worker/README.md`](worker/README.md) · [`web/README.md`](web/README.md)
 
@@ -83,29 +93,42 @@ Defaults are baked in: **NIFTY → nearest expiry → full chain**. Output goes 
 pip install -r excel/requirements-excel.txt
 ```
 
-The local helper listens on `http://127.0.0.1:8765` only, so the web app's Excel
-panel can open/download the workbook and change the NSE refresh timer (1–60
-minutes) without touching the internet.
+The local helper is optional/legacy. It listens on `http://127.0.0.1:8765` only,
+and the dashboard no longer depends on it: Excel downloads come from the hosted
+API and never show a "helper is not running" modal. Developers who want to drive
+the local Excel automation from the panel can still start it with
+`excel/excel_server.bat`.
 
 → Full details: [`excel/README.md`](excel/README.md)
 
-### 4. Snapshot Excel export + refreshable workbook
+### 4. Excel export panel + refreshable workbook
 
-The web app can also export **every strike** of the selected symbol and expiry
-straight from the stored Supabase snapshot — no NSE call from the browser:
+The **Export Excel** panel picks symbol, expiry, strike range (all / 10 / 20 / 30
+around ATM) and import fields, then builds the workbook straight from the stored
+Supabase snapshot — no NSE call from the browser:
 
 - **Download Excel** (above the option chain) → `.xlsx` with **Summary**,
   **Option Chain** and **Raw Data** sheets.
 - `GET /api/option-chain?symbol=NIFTY&expiry=27-Oct-2026&format=json|csv` → the
   same data as JSON or CSV, with the real NSE source timestamp and freshness.
+- `GET /api/option-chain/expiries?symbol=NIFTY` → the expiries that actually
+  exist, newest first.
+- `GET /api/option-chain/history?symbol=NIFTY&expiry=27-Oct-2026&limit=60` →
+  intraday history points.
+- `GET /api/health` → stored rows, write age and per-symbol freshness, for
+  verifying the hosted collector.
+- `range=all|10|20|30` and `fields=oi,oi_change,volume,iv,ltp,price_change,bid_ask`
+  narrow the JSON/CSV/workbook view; `Raw Data` in the workbook always keeps every
+  strike and every field.
 - `GET /api/option-chain/export?symbol=NIFTY&expiry=27-Oct-2026` → the workbook.
 
 The downloaded file is a point-in-time snapshot. To refresh Excel in place,
 connect it to the CSV/JSON endpoint with Power Query — copy-paste M code and
 Refresh All steps: [`docs/EXCEL_POWER_QUERY.md`](docs/EXCEL_POWER_QUERY.md).
 
-Refreshing re-reads Supabase; it does not contact NSE. Only the Python worker
-does that.
+Refreshing re-reads Supabase; it does not contact NSE. Only the collector
+(`worker/bridge_worker.py`) does that. Deployment, scheduling and verification
+steps: [`docs/HOSTED_DEPLOYMENT.md`](docs/HOSTED_DEPLOYMENT.md).
 
 ---
 
@@ -127,7 +150,7 @@ does that.
 ├── web/                            # tool 2 - Next.js frontend (Vercel-ready)
 ├── excel/                          # tool 3 - Excel automation
 │   ├── excel_auto.py               #   fetch -> CSV/XLSX, live workbook, poller
-│   ├── excel_server.py             #   local helper for the web app button
+│   ├── excel_server.py             #   optional local helper (not used by the panel)
 │   ├── excel_now.bat  excel_live.bat  excel_server.bat
 │   ├── requirements-excel.txt
 │   └── README.md

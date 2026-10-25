@@ -2,7 +2,7 @@
 
 import React from "react";
 import { formatIndian } from "@/lib/supabase";
-import { ArrowDownRight, ArrowUpRight, Crosshair, DollarSign, Gauge, Layers } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Crosshair, DollarSign, Gauge } from "lucide-react";
 
 interface MetricsBarProps {
   symbol: string;

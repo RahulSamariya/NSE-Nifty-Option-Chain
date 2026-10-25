@@ -33,12 +33,15 @@ export function csvColumns(record: OptionChainRecord): string[] {
 export function optionChainToCsv(
   record: OptionChainRecord,
   status: SnapshotStatus,
+  fieldKeys?: string[],
+  rows?: OptionChainRecord["raw_data"],
 ): string {
-  const fields = chainFieldKeys(record.raw_data);
+  const fields = fieldKeys ?? chainFieldKeys(record.raw_data);
+  const strikes = rows ?? record.raw_data;
   const header = [...META_COLUMNS, ...fields];
   const lines: string[] = [header.map(csvCell).join(",")];
 
-  for (const strike of record.raw_data) {
+  for (const strike of strikes) {
     const row: unknown[] = [
       record.symbol,
       record.expiry,

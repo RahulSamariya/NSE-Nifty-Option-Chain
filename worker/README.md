@@ -23,8 +23,9 @@ Every `--interval` seconds (30 by default):
 5. Prints success **only after** Supabase confirms the write; any API error is
    printed and the loop retries on the next tick.
 
-By default it only runs on weekdays 09:15–15:35 IST. `--always` ignores market
-hours (useful for testing). Windows sleep is suppressed while it runs.
+By default it only runs on weekdays 09:15–15:35 IST, skipping dates listed in
+[`../nse_holidays.txt`](../nse_holidays.txt). `--always` ignores market hours and
+holidays (useful for testing). Windows sleep is suppressed while the daemon runs.
 
 ---
 
@@ -60,10 +61,25 @@ hours (useful for testing). Windows sleep is suppressed while it runs.
 ```bash
 python worker/bridge_worker.py
 python worker/bridge_worker.py --symbol NIFTY BANKNIFTY --interval 30 --always
+
+# one cycle, for cron / systemd timer / Task Scheduler:
+python worker/bridge_worker.py --once --symbol NIFTY BANKNIFTY FINNIFTY
 ```
 
 or double-click **`worker/run_bridge.bat`**. Stop with **Ctrl+C**; it re-enables
 normal sleep on exit.
+
+`--once` respects market hours and the holiday calendar and exits:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Cycle completed, or market closed/holiday (nothing to do). |
+| `1` | At least one symbol failed; credentials missing. Previous snapshots are untouched. |
+| `2` | Bad arguments, or a malformed `nse_holidays.txt` line. |
+
+Use `--holidays <path>` to point at a different calendar file. Hosted options
+(systemd timer, Windows Task Scheduler, Docker, `/api/health` verification) are
+documented in [`../docs/HOSTED_DEPLOYMENT.md`](../docs/HOSTED_DEPLOYMENT.md).
 
 The worker prints the symbol, spot and source timestamp on every successful
 write, so a quiet console means it is not writing.
@@ -85,9 +101,10 @@ write, so a quiet console means it is not writing.
 ## Files
 
 ```
-bridge_worker.py   # the ingestion loop
+bridge_worker.py   # the ingestion loop and --once cycle
 run_bridge.bat     # Windows launcher
 ```
 
 Also read: [`../web/README.md`](../web/README.md) ·
+[`../docs/HOSTED_DEPLOYMENT.md`](../docs/HOSTED_DEPLOYMENT.md) ·
 [`../db/schema.sql`](../db/schema.sql) · [`../README.md`](../README.md)

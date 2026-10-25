@@ -123,10 +123,58 @@ def ist_now():
     return dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30)))
 
 
-def market_open(now=None):
-    """Mon-Fri 09:15-15:35 IST. Exchange holidays are NOT checked."""
+HOLIDAY_FILE = APP_DIR / "nse_holidays.txt"
+
+
+def load_holidays(path=None):
+    """Load exchange holidays from a text file, one ``YYYY-MM-DD`` date per line.
+
+    Blank lines and ``#`` comments are ignored. A malformed line raises
+    ``ValueError`` (with the line number) rather than quietly treating a holiday
+    as a trading day. A missing file returns an empty set, so the worker still
+    runs weekdays-only until an exchange calendar is installed.
+    """
+    calendar = Path(path) if path is not None else HOLIDAY_FILE
+    if not calendar.exists():
+        return set()
+
+    holidays = set()
+    for number, line in enumerate(
+        calendar.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            continue
+        try:
+            holidays.add(dt.date.fromisoformat(text))
+        except ValueError as exc:
+            raise ValueError(
+                f"{calendar.name}:{number}: expected an ISO date (YYYY-MM-DD), got {text!r}"
+            ) from exc
+    return holidays
+
+
+def _holiday_date(value):
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    return dt.date.fromisoformat(str(value).strip())
+
+
+def market_open(now=None, holidays=None):
+    """Mon-Fri 09:15-15:35 IST, excluding dates in ``holidays``.
+
+    ``holidays`` accepts dates or ISO date strings; an empty/None calendar means
+    "weekdays only", which is all this repository knows without a published NSE
+    calendar. Pass ``load_holidays()`` to respect real exchange holidays.
+    """
     now = now or ist_now()
-    return now.weekday() < 5 and dt.time(9, 15) <= now.time() <= dt.time(15, 35)
+    if now.weekday() >= 5:
+        return False
+    if holidays and now.date() in {_holiday_date(day) for day in holidays}:
+        return False
+    return dt.time(9, 15) <= now.time() <= dt.time(15, 35)
 
 
 # ------------------------------------------------------------------- parsing

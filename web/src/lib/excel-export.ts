@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import type { OptionChainRecord } from "@/types/option-chain";
+import type { OptionChainRecord, StrikeRow } from "@/types/option-chain";
 import type { SnapshotStatus } from "./market-status";
 import {
   CHAIN_FIELDS,
@@ -15,6 +15,12 @@ export interface WorkbookOptions {
   ageSeconds: number | null;
   /** Full CSV endpoint for this snapshot, shown in the summary sheet. */
   csvUrl: string;
+  /** Window exported to the Option Chain sheet (defaults to every strike). */
+  chainRows?: StrikeRow[];
+  /** Columns exported to the Option Chain sheet (defaults to the full schema). */
+  chainFields?: FieldSpec[];
+  rangeLabel?: string;
+  fieldsLabel?: string;
   now?: Date;
 }
 
@@ -78,7 +84,7 @@ function formatAge(seconds: number | null): string {
 
 function addSummarySheet(
   workbook: ExcelJS.Workbook,
-  { record, status, ageSeconds, csvUrl, now }: WorkbookOptions,
+  { record, status, ageSeconds, csvUrl, chainRows, rangeLabel: rangeText, fieldsLabel, now }: WorkbookOptions,
 ): void {
   const sheet = workbook.addWorksheet("Summary", {
     properties: { tabColor: { argb: "FF059669" }, defaultRowHeight: 18 },
@@ -108,6 +114,7 @@ function addSummarySheet(
   subtitle.alignment = { vertical: "middle", wrapText: true, indent: 1 };
   sheet.getRow(2).height = 28;
 
+  const exportedRows = chainRows ?? record.raw_data;
   const rows: Array<[string, ExcelJS.CellValue, string?]> = [
     ["Symbol", record.symbol],
     ["Expiry", record.expiry],
@@ -116,7 +123,10 @@ function addSummarySheet(
     ["Max Pain strike", record.max_pain, "#,##0"],
     ["Total Call OI", record.total_ce_oi, "#,##0"],
     ["Total Put OI", record.total_pe_oi, "#,##0"],
-    ["Strikes exported", record.raw_data.length, "#,##0"],
+    ["Strike range", rangeText ?? "All strikes"],
+    ["Import fields", fieldsLabel ?? "All fields"],
+    ["Strikes exported", exportedRows.length, "#,##0"],
+    ["Strikes in raw data", record.raw_data.length, "#,##0"],
     ["NSE source timestamp", record.nse_timestamp ?? "unavailable"],
     ["Snapshot status", status],
     ["Snapshot age at export", formatAge(ageSeconds)],
@@ -171,15 +181,18 @@ function addSummarySheet(
 
 function addChainSheet(
   workbook: ExcelJS.Workbook,
-  { record, status }: WorkbookOptions,
+  { record, status, chainRows, chainFields }: WorkbookOptions,
 ): void {
-  const extras = extraFieldKeys(record.raw_data).map<FieldSpec>((key) => ({
-    key,
-    label: `Extra: ${key}`,
-    kind: "decimal",
-    width: 14,
-  }));
-  const fields: FieldSpec[] = [...CHAIN_FIELDS, ...extras];
+  const rows = chainRows ?? record.raw_data;
+  const extras = chainFields
+    ? []
+    : extraFieldKeys(record.raw_data).map<FieldSpec>((key) => ({
+        key,
+        label: `Extra: ${key}`,
+        kind: "decimal",
+        width: 14,
+      }));
+  const fields: FieldSpec[] = chainFields ?? [...CHAIN_FIELDS, ...extras];
   const known = new Set(CHAIN_FIELDS.map((field) => field.key));
   const sheet = workbook.addWorksheet("Option Chain", {
     properties: { tabColor: { argb: "FF1D4ED8" } },
@@ -204,7 +217,7 @@ function addChainSheet(
   });
 
   const firstDataRow = 2;
-  record.raw_data.forEach((strike, index) => {
+  rows.forEach((strike, index) => {
     const row = sheet.addRow(
       fields.map((field) => {
         const value = strike[field.key];
@@ -228,7 +241,7 @@ function addChainSheet(
     });
   });
 
-  const lastRow = firstDataRow + record.raw_data.length - 1;
+  const lastRow = firstDataRow + rows.length - 1;
   sheet.autoFilter = {
     from: { row: 1, column: 1 },
     to: { row: lastRow, column: fields.length },
