@@ -62,7 +62,9 @@ Then apply [`db/schema.sql`](db/schema.sql) to a new Supabase project (or
 [`db/supabase_security_migration.sql`](db/supabase_security_migration.sql) for an
 existing one). Anonymous users can read; only `service_role` can write.
 
-The web app also has an **Excel** button in its header — see below.
+The web app also has a **Live Excel** button in its header (local helper), plus a
+**Download Excel** button above the chain and a read-only snapshot API. See
+below.
 
 → Full details: [`worker/README.md`](worker/README.md) · [`web/README.md`](web/README.md)
 
@@ -86,6 +88,24 @@ panel can open/download the workbook and change the NSE refresh timer (1–60
 minutes) without touching the internet.
 
 → Full details: [`excel/README.md`](excel/README.md)
+
+### 4. Snapshot Excel export + refreshable workbook
+
+The web app can also export **every strike** of the selected symbol and expiry
+straight from the stored Supabase snapshot — no NSE call from the browser:
+
+- **Download Excel** (above the option chain) → `.xlsx` with **Summary**,
+  **Option Chain** and **Raw Data** sheets.
+- `GET /api/option-chain?symbol=NIFTY&expiry=27-Oct-2026&format=json|csv` → the
+  same data as JSON or CSV, with the real NSE source timestamp and freshness.
+- `GET /api/option-chain/export?symbol=NIFTY&expiry=27-Oct-2026` → the workbook.
+
+The downloaded file is a point-in-time snapshot. To refresh Excel in place,
+connect it to the CSV/JSON endpoint with Power Query — copy-paste M code and
+Refresh All steps: [`docs/EXCEL_POWER_QUERY.md`](docs/EXCEL_POWER_QUERY.md).
+
+Refreshing re-reads Supabase; it does not contact NSE. Only the Python worker
+does that.
 
 ---
 
@@ -114,6 +134,8 @@ minutes) without touching the internet.
 ├── db/
 │   ├── schema.sql                  # fresh Supabase setup
 │   └── supabase_security_migration.sql
+├── docs/
+│   └── EXCEL_POWER_QUERY.md        # refreshable Excel / Power Query guide
 ├── tests/
 │   └── test_nse_reliability.py     # offline parser/worker tests
 ├── requirements.txt                # Python deps for dashboard + worker
@@ -141,6 +163,7 @@ Frontend checks:
 ```bash
 cd web
 npm run lint
+npm test          # vitest: freshness, CSV, validation, workbook, API statuses
 npm run build
 ```
 

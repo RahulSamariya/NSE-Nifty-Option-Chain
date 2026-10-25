@@ -95,10 +95,10 @@ export function Header({
           <button
             onClick={onOpenExcel}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition-colors"
-            title="Excel export and live workbook"
+            title="Live Excel helper: fetch NSE directly on this machine (not the stored snapshot)"
           >
             <FileSpreadsheet className="w-4 h-4" />
-            Excel
+            Live Excel
           </button>
 
           <button

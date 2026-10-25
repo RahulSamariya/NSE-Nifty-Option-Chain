@@ -24,6 +24,8 @@ export interface StrikeRow {
   PE_BID_QTY?: number;
   PE_ASK?: number;
   PE_ASK_QTY?: number;
+  /** Raw NSE payloads can carry extra keys; keep them exportable. */
+  [key: string]: unknown;
 }
 
 export interface OptionChainRecord {
