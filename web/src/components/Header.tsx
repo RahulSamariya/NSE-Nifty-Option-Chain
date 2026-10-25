@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Activity, RefreshCw, TrendingUp } from "lucide-react";
+import { Activity, FileSpreadsheet, RefreshCw, TrendingUp } from "lucide-react";
 import type { SnapshotStatus } from "@/lib/supabase";
 
 interface HeaderProps {
@@ -12,6 +12,7 @@ interface HeaderProps {
   nseTimestamp: string | null;
   status: SnapshotStatus | "Loading";
   onRefresh: () => void;
+  onOpenExcel: () => void;
   isLoading: boolean;
 }
 
@@ -23,6 +24,7 @@ export function Header({
   nseTimestamp,
   status,
   onRefresh,
+  onOpenExcel,
   isLoading,
 }: HeaderProps) {
   return (
@@ -89,6 +91,15 @@ export function Header({
             />
             {status}
           </div>
+
+          <button
+            onClick={onOpenExcel}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition-colors"
+            title="Excel export and live workbook"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            Excel
+          </button>
 
           <button
             onClick={onRefresh}

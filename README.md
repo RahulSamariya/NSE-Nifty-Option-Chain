@@ -1,178 +1,172 @@
-# 📊 NSE Option Chain Dashboard & Quantitative Analytics Suite
+# 📊 NSE Option Chain — three tools, one repository
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/Streamlit-1.30%2B-FF4B4B?logo=streamlit&logoColor=white" alt="Streamlit">
-  <img src="https://img.shields.io/badge/Plotly-5.18%2B-3F4F75?logo=plotly&logoColor=white" alt="Plotly">
-  <img src="https://img.shields.io/badge/Database-SQLite3-003B57?logo=sqlite&logoColor=white" alt="SQLite3">
-  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-</p>
+Live option-chain data from the **National Stock Exchange of India (NSE)**,
+delivered three ways. Each one is self-contained and can be used on its own;
+they share a single scraper/parser so the numbers always agree.
 
-A high-performance, real-time derivatives dashboard for the **National Stock Exchange of India (NSE)**. It extracts live option chain contracts, computes real-time quantitative metrics (such as vectorized **Max Pain** and **Put-Call Ratio**), generates interactive **Plotly** visualizations, and records intraday time-series data to **SQLite** for post-market analysis.
+| # | Tool | Folder | What it is | Best for |
+|---|---|---|---|---|
+| 1 | **Streamlit dashboard** | [`dashboard/`](dashboard/) | Local Python app with the option chain table, Plotly charts, Max Pain / PCR and SQLite history | Research on your own PC |
+| 2 | **Web app** | [`web/`](web/) | Next.js 15 + Supabase dashboard you can open from any device | Phone / cloud access |
+| 3 | **Excel automation** | [`excel/`](excel/) | One click → a formatted `.xlsx`, or a workbook that refreshes itself every minute | Spreadsheet work |
 
----
-
-## 🌟 Key Features
-
-### 1. 📊 Real-Time Option Chain Viewer
-- **Multi-Asset Support:** Seamlessly inspect major Indian indices (**NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, NIFTYNXT50**) and high-liquidity equities (e.g. `RELIANCE`, `TCS`, `HDFCBANK`).
-- **High-Fidelity NSE Styling:** Mirrors the official `nseindia.com` table layout with:
-  - **In-the-Money (ITM)** yellow shading (`#efe9cf`)
-  - **At-the-Money (ATM)** highlight border (`#ffe066`)
-  - Green/Red coloration for positive and negative price shifts
-  - True **Indian numbering format** (e.g. `1,05,611` instead of standard Western thousands).
-- **Custom View Mode:** Select arbitrary columns (OI, IV, Volume, LTP, Bid/Ask) and adjust strike ranges centered around the ATM strike.
-
-### 2. 🧮 Quantitative Derivatives Analytics
-- **Vectorized Max Pain Algorithm:** Identifies the strike price where option sellers encounter minimal loss (and buyers face maximum expiration loss) computed using optimized NumPy matrix broadcasting:
-  $$\text{Buyer Payoff} = \sum (\text{CE\_OI} \times \max(0, k - s)) + \sum (\text{PE\_OI} \times \max(0, s - k))$$
-- **Put-Call Ratio (PCR):** Real-time sentiment gauge computed over total Put Open Interest vs. Call Open Interest.
-- **Spot Tracking:** Dynamic underlying price tracking with automatic strike centering.
-
-### 3. 📈 Interactive Visualization Suite (Plotly)
-- **Open Interest Distribution:** Side-by-side grouped bar chart comparing Call vs. Put OI across all strikes.
-- **Change in Open Interest:** Identifies aggressive call writing or put unwinding intraday.
-- **Traded Volume by Strike:** Pinpoints high-activity liquidity hubs.
-- **Implied Volatility (IV Smile):** Plots volatility skew across strikes for pricing anomalies.
-- **Option Premium Curve (LTP):** Strike-by-strike premium decay visualization.
-
-### 4. 📜 Historical Intraday Persistence
-- **Dual Logging System:**
-  - **CSV Snapshots:** Automatically appends timestamped records into `history/<symbol>_<expiry>.csv`.
-  - **Relational SQLite DB (`nse_history.db`):** Maintains indexed snapshots to replay Spot vs. PCR trends and strike-level price movements over time.
-- **Headless Collector Daemon:** Run `collector.py` independently without launching a browser or UI.
-
-### 5. 📱 Multi-Device Ready
-- Bind the web server to `0.0.0.0` with a single click (`run_network.bat`) to access the full live dashboard from your smartphone, tablet, or secondary laptop on the same local network.
-
----
-
-## 🏛️ System Architecture
-
-```mermaid
-flowchart TD
-    subgraph NSE_Network["National Stock Exchange (NSE India)"]
-        API1["/api/option-chain-contract-info"]
-        API2["/api/option-chain-v3"]
-    end
-
-    subgraph Core_Engine["Core Engine (nse_core.py)"]
-        Client["Session Warmer & Retry Client\n(Headers, Cookies, Anti-Bot)"]
-        Parser["Parser & Indian Number Formatter"]
-        Analytics["Derivatives Math\n(Max Pain, PCR, OI Aggregates)"]
-        SQLite[("SQLite Engine\nnse_history.db")]
-    end
-
-    subgraph UI_Presentation["Streamlit Dashboard (app.py)"]
-        Tab1["📊 Option Chain (HTML / Styler)"]
-        Tab2["📈 Plotly Visualizations (charts.py)"]
-        Tab3["📜 Historical Replay & Analytics"]
-        Export["Excel (.xlsx) & CSV Exporter"]
-    end
-
-    subgraph Background_Worker["Background Daemon (collector.py)"]
-        MarketCheck{"Market Hours Check\n(09:15-15:35 IST)"}
-        Scheduler["Polling Loop (60s timer)"]
-    end
-
-    API1 & API2 --> Client
-    Client --> Parser --> Analytics
-    Analytics --> SQLite
-    Analytics --> Tab1 & Tab2 & Tab3
-    Analytics --> Export
-    MarketCheck --> Scheduler --> Client
+```
+dashboard/  →  reads NSE directly, writes SQLite + history/       (local only)
+worker/     →  reads NSE, validates, writes Supabase  ──►  web/   (cloud)
+excel/      →  reads NSE, writes CSV/XLSX; optional local helper  (Windows + Excel)
+core/       →  shared: session warming, parsing, analytics, SQLite
 ```
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Quick start
 
-### Prerequisites
-- Windows 10/11, macOS, or Linux
-- Python **3.10+** (Python 3.13 recommended)
-
-### 1. Installation
-Clone the repository:
 ```bash
 git clone https://github.com/RahulSamariya/NSE-Nifty-Option-Chain.git
 cd NSE-Nifty-Option-Chain
+pip install -r requirements.txt        # or double-click setup.bat
 ```
 
-Install all required dependencies:
+### 1. Streamlit dashboard (local)
+
 ```bash
-pip install -r requirements.txt
+streamlit run dashboard/app.py         # http://localhost:8501
 ```
-*(On Windows, you can simply double-click `setup.bat`)*
 
-### 2. Launching the Dashboard
+or double-click **`dashboard/run.bat`**. For phone/Wi-Fi access use
+**`dashboard/run_network.bat`**. Headless logging:
+`python dashboard/collector.py --symbol NIFTY --interval 60`.
 
-#### Option A: Local Dashboard (Current PC)
+→ Full details: [`dashboard/README.md`](dashboard/README.md)
+
+### 2. Web app (cloud / phone)
+
 ```bash
-streamlit run app.py
-```
-*(Or double-click `run.bat`)*  
-Open your browser to: **`http://localhost:8501`**
+# terminal 1 - push snapshots to Supabase
+python worker/bridge_worker.py --symbol NIFTY BANKNIFTY --interval 30
 
-#### Option B: Multi-Device Mode (Mobile / Wi-Fi)
-```bash
-streamlit run app.py --server.address 0.0.0.0
+# terminal 2 - Next.js frontend
+cd web
+npm install
+npm run dev                            # http://localhost:3000
 ```
-*(Or double-click `run_network.bat`)*  
-Access via your phone/laptop on the same Wi-Fi: **`http://<YOUR-PC-IP>:8501`**
+
+The worker needs a `.env` in the **repository root**:
+
+```ini
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_KEY=<service_role key>
+```
+
+Then apply [`db/schema.sql`](db/schema.sql) to a new Supabase project (or
+[`db/supabase_security_migration.sql`](db/supabase_security_migration.sql) for an
+existing one). Anonymous users can read; only `service_role` can write.
+
+The web app also has an **Excel** button in its header — see below.
+
+→ Full details: [`worker/README.md`](worker/README.md) · [`web/README.md`](web/README.md)
+
+### 3. Excel
+
+| What you want | Double-click |
+|---|---|
+| A formatted workbook right now | `excel/excel_now.bat` |
+| A sheet that keeps updating itself | `excel/excel_live.bat` |
+| The web app's Excel button | `excel/excel_server.bat` |
+
+Defaults are baked in: **NIFTY → nearest expiry → full chain**. Output goes to
+`excel/excel_output/` (git-ignored). `pywin32` is only needed for the live mode:
+
+```bash
+pip install -r excel/requirements-excel.txt
+```
+
+The local helper listens on `http://127.0.0.1:8765` only, so the web app's Excel
+panel can open/download the workbook and change the NSE refresh timer (1–60
+minutes) without touching the internet.
+
+→ Full details: [`excel/README.md`](excel/README.md)
 
 ---
 
-## 🤖 Running the Headless Data Collector
+## 📁 Repository layout
 
-To continuously log option chain snapshots into SQLite during trading hours (09:15–15:35 IST) without keeping the web UI open:
+```
+├── core/
+│   └── nse_core.py                 # session warming, parser, analytics, SQLite
+├── dashboard/                      # tool 1 - Streamlit
+│   ├── app.py                      #   UI layer
+│   ├── charts.py                   #   Plotly figure builders
+│   ├── collector.py                #   headless SQLite logger
+│   ├── run.bat  run_network.bat  collect.bat
+│   └── README.md
+├── worker/                         # tool 2 - NSE -> Supabase
+│   ├── bridge_worker.py
+│   ├── run_bridge.bat
+│   └── README.md
+├── web/                            # tool 2 - Next.js frontend (Vercel-ready)
+├── excel/                          # tool 3 - Excel automation
+│   ├── excel_auto.py               #   fetch -> CSV/XLSX, live workbook, poller
+│   ├── excel_server.py             #   local helper for the web app button
+│   ├── excel_now.bat  excel_live.bat  excel_server.bat
+│   ├── requirements-excel.txt
+│   └── README.md
+├── db/
+│   ├── schema.sql                  # fresh Supabase setup
+│   └── supabase_security_migration.sql
+├── tests/
+│   └── test_nse_reliability.py     # offline parser/worker tests
+├── requirements.txt                # Python deps for dashboard + worker
+├── setup.bat                       # installs requirements.txt
+├── run_web.bat                     # starts the Next.js dev server
+├── push_to_github.bat              # push this branch to GitHub
+└── .env.example                    # worker credentials template
+```
+
+Generated at runtime (git-ignored): `nse_history.db`, `config.json`,
+`history/`, `excel/excel_output/`, `__pycache__/`.
+
+---
+
+## 🧪 Tests
+
+The parser/worker suite is offline — no NSE or Supabase calls:
 
 ```bash
-# Log NIFTY every 60 seconds
-python collector.py --symbol NIFTY --interval 60
-
-# Log multiple symbols every 30 seconds
-python collector.py --symbol NIFTY BANKNIFTY --interval 30
-
-# Log outside market hours (testing mode)
-python collector.py --symbol NIFTY --always
+python -m unittest tests.test_nse_reliability
 ```
-*(Or double-click `collect.bat`)*
 
----
+Frontend checks:
 
-## 📁 Repository Structure
-
-```
-├── app.py                # Main Streamlit web application & UI layer
-├── nse_core.py           # Core library: session warming, parser, analytics, SQLite
-├── charts.py             # Plotly figure generators (OI, Volume, IV Smile, Intraday)
-├── collector.py          # Headless background polling daemon
-├── requirements.txt      # Pinned Python package dependencies
-├── config.json           # User-customized default settings (auto-generated)
-├── push_to_github.bat    # 1-click helper script to push commits to GitHub
-├── run.bat               # Windows launcher for local web dashboard
-├── run_network.bat       # Windows launcher for Wi-Fi multi-device access
-├── collect.bat           # Windows launcher for background data collector
-├── setup.bat             # Automated environment setup script
-└── history/              # CSV snapshot storage directory
+```bash
+cd web
+npm run lint
+npm run build
 ```
 
 ---
 
-## ⚙️ Configuration & Anti-Bot Protection
+## ⚙️ How NSE is handled
 
-NSE enforces strict anti-scraping controls that block automated requests without proper session validation. This project overcomes this via:
-- **Session Warming (`_warm`):** Pre-fetches the NSE homepage and option chain referer page to populate required session cookies (`bm_sv`, `nsit`, `ak_bmsc`).
-- **Resilient Retry Loop:** Automatically triggers cookie refreshing and exponential backoff upon encountering HTTP 401/403 or network drops.
-- **Config Persistence:** Adjust your default index, refresh frequency, and strike counts directly in the UI and click **"Save as default settings"** to persist your profile into `config.json`.
+NSE blocks plain automated requests. `core/nse_core.py` warms a session (NSE
+homepage + option chain referer) to collect `bm_sv`, `nsit` and `ak_bmsc`
+cookies, retries on 401/403 with a fresh session, and parses with IST-aware
+timestamps. The worker refuses snapshots whose source timestamp is older than
+300 s.
+
+- **Config:** click **"Save as default settings"** in the Streamlit app to write
+  `config.json` at the repository root.
+- **Supabase:** anonymous clients can read; writes require the `service_role`
+  key and happen only in `worker/bridge_worker.py`.
 
 ---
 
-## ⚖️ Disclaimer & Notice
+## ⚖️ Disclaimer
 
-- This software is strictly for **educational and personal research purposes**.
-- Derivatives trading carries significant financial risk. The metrics provided (such as Max Pain and PCR) are theoretical calculations and should not be considered investment advice.
-- Respect the National Stock Exchange of India's (NSE) Terms of Service. Avoid setting polling intervals below 15–30 seconds to prevent unnecessary server load.
+- Strictly for **educational and personal research**.
+- Derivatives trading carries significant financial risk. Max Pain, PCR and IV
+  are theoretical calculations — not investment advice.
+- Respect NSE's Terms of Service; avoid polling faster than 15–30 seconds.
 
 ---
 

@@ -5,6 +5,8 @@ __pycache__/
 config.json
 history/
 .streamlit/
+excel_output/
+excel/excel_output/
 *.egg-info/
 dist/
 build/

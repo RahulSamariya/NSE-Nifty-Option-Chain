@@ -1,8 +1,16 @@
 import datetime as dt
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+
+# repo layout: these tests live in tests/, code lives in core/ and worker/
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "core", ROOT / "worker"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import bridge_worker
 import nse_core

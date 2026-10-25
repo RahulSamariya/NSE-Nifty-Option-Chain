@@ -8,11 +8,18 @@ This file owns only the Streamlit-specific UI layer.
 
 import datetime as dt
 import io
+import sys
 import time
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+# repo layout: core/ holds nse_core.py, this file lives in dashboard/
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "core"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import nse_core as nc
 import charts

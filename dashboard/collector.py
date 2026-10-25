@@ -1,17 +1,25 @@
 """Headless collector: saves option-chain snapshots to SQLite on a schedule.
 No browser and no dashboard needed - leave it running during market hours.
 
-Examples:
-  py collector.py                                   (NIFTY, every 60 s)
-  py collector.py --symbol NIFTY BANKNIFTY --interval 30
-  py collector.py --symbol NIFTY --expiry 27-Oct-2026
-  py collector.py --always                          (also outside market hours)
+Examples (run from the repository root):
+  py dashboard/collector.py                                   (NIFTY, every 60 s)
+  py dashboard/collector.py --symbol NIFTY BANKNIFTY --interval 30
+  py dashboard/collector.py --symbol NIFTY --expiry 27-Oct-2026
+  py dashboard/collector.py --always                          (also outside market hours)
 
 By default it only runs Mon-Fri 09:15-15:35 IST. Exchange holidays are not checked.
 Stop with Ctrl+C.
 """
 import argparse
+import sys
 import time
+from pathlib import Path
+
+# repo layout: core/ holds nse_core.py, this file lives in dashboard/
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "core"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import nse_core as nc
 

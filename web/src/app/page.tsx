@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { MetricsBar } from "@/components/MetricsBar";
 import { OptionChainTable } from "@/components/OptionChainTable";
 import { ChartsView } from "@/components/ChartsView";
+import { ExcelPanel } from "@/components/ExcelPanel";
 import { OptionChainRecord, OptionChainHistoryPoint } from "@/types/option-chain";
 import { getSnapshotStatus, isOptionChainRecord, supabase } from "@/lib/supabase";
 import { AlertCircle, BarChart3, Table, SlidersHorizontal } from "lucide-react";
@@ -26,6 +27,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [excelOpen, setExcelOpen] = useState(false);
   const requestId = useRef(0);
 
   const fetchData = useCallback(async () => {
@@ -118,6 +120,7 @@ export default function Home() {
         nseTimestamp={visibleData?.nse_timestamp ?? null}
         status={status}
         onRefresh={fetchData}
+        onOpenExcel={() => setExcelOpen(true)}
         isLoading={isLoading}
       />
 
@@ -241,6 +244,8 @@ export default function Home() {
         )}
 
       </main>
+
+      {excelOpen && <ExcelPanel onClose={() => setExcelOpen(false)} />}
 
       {/* Footer */}
       <footer className="border-t border-zinc-800/80 mt-12 py-6 text-center text-xs text-zinc-500">

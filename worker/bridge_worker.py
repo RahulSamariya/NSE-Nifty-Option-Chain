@@ -3,9 +3,9 @@
 Continuously scrapes NSE Option Chain data via residential IP and synchronizes
 it to Supabase for the Vercel-hosted Next.js web application.
 
-Usage:
-  python bridge_worker.py
-  python bridge_worker.py --symbol NIFTY BANKNIFTY --interval 30 --always
+Usage (run from the repository root):
+  python worker/bridge_worker.py
+  python worker/bridge_worker.py --symbol NIFTY BANKNIFTY --interval 30 --always
 """
 
 import argparse
@@ -19,6 +19,13 @@ import time
 from pathlib import Path
 
 from supabase import Client, create_client
+
+# repo layout: core/ holds nse_core.py, this file lives in worker/
+ROOT = Path(__file__).resolve().parent.parent
+for _p in (ROOT, ROOT / "core"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
 import nse_core as nc
 
 # Windows API to prevent system sleep while worker is running
@@ -47,7 +54,7 @@ def allow_sleep():
 
 def load_env_credentials():
     """Load SUPABASE_URL and SUPABASE_KEY from .env or environment."""
-    env_file = Path(__file__).resolve().parent / ".env"
+    env_file = Path(__file__).resolve().parent.parent / ".env"
     creds = {}
     if env_file.exists():
         for line in env_file.read_text(encoding="utf-8").splitlines():

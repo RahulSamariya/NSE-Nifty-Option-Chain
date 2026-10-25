@@ -1,5 +1,6 @@
 """Shared NSE logic (no Streamlit): client, parsing, formatting, analytics, SQLite storage.
-Used by app.py (dashboard) and collector.py (headless logger)."""
+Used by dashboard/app.py and dashboard/collector.py, and by the worker and the
+Excel feature."""
 import datetime as dt
 import json
 import re
@@ -49,7 +50,9 @@ PE_SPEC = [("BID_QTY", 0), ("BID", 2), ("ASK", 2), ("ASK_QTY", 0), ("CHNG", 2),
            ("LTP", 2), ("IV", 2), ("VOLUME", 0), ("CHNG_IN_OI", 0), ("OI", 0)]
 ALL_NSE_FIELDS = [n for n, _ in CE_SPEC]
 
-APP_DIR = Path(__file__).resolve().parent
+# repo root (this file lives in core/) - keeps config.json and the SQLite DB
+# at the top level no matter where the app is launched from
+APP_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = APP_DIR / "nse_history.db"
 CONFIG_PATH = APP_DIR / "config.json"
 
