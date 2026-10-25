@@ -3,7 +3,10 @@ __pycache__/
 *.pyo
 *.db
 config.json
-history/
+# Root-level Streamlit history output only. A bare `history/` also matched the
+# web app's `src/app/api/option-chain/history/` route, which silently kept that
+# production source file out of every commit (Vercel then failed with TS2307).
+/history/
 .streamlit/
 excel_output/
 excel/excel_output/
