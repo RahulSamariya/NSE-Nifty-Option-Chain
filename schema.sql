@@ -40,25 +40,30 @@ CREATE INDEX IF NOT EXISTS idx_history_lookup
 ALTER TABLE public.option_chain_live ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.option_chain_history ENABLE ROW LEVEL SECURITY;
 
--- Allow public reads (Vercel Next.js app uses the anon public key)
-CREATE POLICY "Allow public read access on live chain"
+-- Remove older policies when this schema is reapplied.
+DROP POLICY IF EXISTS "Allow write access for backend worker" ON public.option_chain_live;
+DROP POLICY IF EXISTS "Allow insert for backend worker on history" ON public.option_chain_history;
+DROP POLICY IF EXISTS "Allow public read access on live chain" ON public.option_chain_live;
+DROP POLICY IF EXISTS "Allow public read access on chain history" ON public.option_chain_history;
+DROP POLICY IF EXISTS option_chain_live_public_read ON public.option_chain_live;
+DROP POLICY IF EXISTS option_chain_history_public_read ON public.option_chain_history;
+
+REVOKE ALL PRIVILEGES ON TABLE public.option_chain_live FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON TABLE public.option_chain_history FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE public.option_chain_live TO anon;
+GRANT SELECT ON TABLE public.option_chain_history TO anon;
+GRANT ALL PRIVILEGES ON TABLE public.option_chain_live TO service_role;
+GRANT ALL PRIVILEGES ON TABLE public.option_chain_history TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE public.option_chain_history_id_seq TO service_role;
+
+-- Vercel uses the anon key for reads. The trusted worker uses the backend-only
+-- service_role key, which bypasses RLS.
+CREATE POLICY option_chain_live_public_read
     ON public.option_chain_live FOR SELECT
-    TO anon, authenticated
+    TO anon
     USING (true);
 
-CREATE POLICY "Allow public read access on chain history"
+CREATE POLICY option_chain_history_public_read
     ON public.option_chain_history FOR SELECT
-    TO anon, authenticated
+    TO anon
     USING (true);
-
--- Allow backend worker with anon key (or service_role key) to insert & update
-CREATE POLICY "Allow write access for backend worker"
-    ON public.option_chain_live FOR ALL
-    TO anon, authenticated
-    USING (true)
-    WITH CHECK (true);
-
-CREATE POLICY "Allow insert for backend worker on history"
-    ON public.option_chain_history FOR INSERT
-    TO anon, authenticated
-    WITH CHECK (true);

@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { OptionChainRecord, StrikeRow } from "@/types/option-chain";
+import { OptionChainRecord } from "@/types/option-chain";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -8,6 +8,87 @@ export const supabase =
   supabaseUrl && supabaseAnonKey
     ? createClient(supabaseUrl, supabaseAnonKey)
     : null;
+
+export type SnapshotStatus = "Live" | "Last Close" | "Stale" | "Unavailable";
+
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+export function parseNseTimestamp(value: string | null | undefined): Date | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const match = value.trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const [, dayText, monthText, yearText, hourText, minuteText, secondText] = match;
+  const month = MONTHS[monthText.toLowerCase()];
+  if (month === undefined) return null;
+  const day = Number(dayText);
+  const year = Number(yearText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const localAsUtc = Date.UTC(year, month, day, hour, minute, second);
+  const check = new Date(localAsUtc);
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month ||
+      check.getUTCDate() !== day || hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  return new Date(localAsUtc - 330 * 60 * 1000);
+}
+
+export function getSnapshotStatus(
+  nseTimestamp: string | null | undefined,
+  now = new Date(),
+): SnapshotStatus {
+  const sourceTime = parseNseTimestamp(nseTimestamp);
+  if (!sourceTime) return "Unavailable";
+
+  const sourceLocal = new Date(sourceTime.getTime() + 330 * 60 * 1000);
+  const sourceMinute = sourceLocal.getUTCHours() * 60 + sourceLocal.getUTCMinutes();
+  if (sourceMinute < 9 * 60 + 15 || sourceMinute > 15 * 60 + 35) return "Stale";
+
+  const nowParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const part = (type: string) => nowParts.find((item) => item.type === type)?.value;
+  const weekday = part("weekday");
+  const nowMinute = Number(part("hour")) * 60 + Number(part("minute"));
+  const isMarketOpen =
+    ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday || "") &&
+    nowMinute >= 9 * 60 + 15 && nowMinute <= 15 * 60 + 35;
+  const sourceDate = `${sourceLocal.getUTCFullYear()}-${sourceLocal.getUTCMonth()}-${sourceLocal.getUTCDate()}`;
+  const currentDate = `${part("year")}-${Number(part("month")) - 1}-${Number(part("day"))}`;
+  const ageMs = now.getTime() - sourceTime.getTime();
+
+  if (ageMs < -60_000) return "Stale";
+  if (isMarketOpen) {
+    return sourceDate === currentDate && ageMs <= 5 * 60_000 ? "Live" : "Stale";
+  }
+  return ageMs <= 72 * 60 * 60 * 1000 ? "Last Close" : "Stale";
+}
+
+export function isOptionChainRecord(
+  value: unknown,
+  symbol: string,
+): value is OptionChainRecord {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Partial<OptionChainRecord>;
+  return row.symbol === symbol && typeof row.expiry === "string" &&
+    typeof row.spot === "number" && Number.isFinite(row.spot) && row.spot > 0 &&
+    Array.isArray(row.raw_data) && row.raw_data.length > 0 &&
+    row.raw_data.every((strike) =>
+      Boolean(strike) && typeof strike === "object" && Number.isFinite(strike.STRIKE)
+    );
+}
 
 // Indian number formatting helper: 1,05,611
 export function formatIndian(val: number | string | null | undefined, decimals = 0): string {
@@ -29,62 +110,4 @@ export function formatIndian(val: number | string | null | undefined, decimals =
 
   const result = (isNeg ? "-" : "") + formatted + (decPart ? "." + decPart : "");
   return result;
-}
-
-// Generate realistic mock data for preview/development when Supabase is not connected
-export function generateMockOptionChain(symbol = "NIFTY"): OptionChainRecord {
-  const spot = symbol === "BANKNIFTY" ? 52400 : symbol === "FINNIFTY" ? 23900 : 24650;
-  const step = symbol === "BANKNIFTY" ? 100 : 50;
-  const atmBase = Math.round(spot / step) * step;
-
-  const rows: StrikeRow[] = [];
-  let totalCeOi = 0;
-  let totalPeOi = 0;
-
-  for (let i = -15; i <= 15; i++) {
-    const strike = atmBase + i * step;
-    const isCeItm = strike < spot;
-    const isPeItm = strike > spot;
-
-    const dist = Math.abs(strike - spot);
-    const ceLtp = Math.max(5, isCeItm ? spot - strike + 40 + Math.random() * 20 : Math.max(2, 250 - dist * 0.4 + Math.random() * 15));
-    const peLtp = Math.max(5, isPeItm ? strike - spot + 40 + Math.random() * 20 : Math.max(2, 250 - dist * 0.4 + Math.random() * 15));
-
-    const ceOi = Math.round(Math.max(1000, (40000 - dist * 40) * (0.8 + Math.random() * 0.5)));
-    const peOi = Math.round(Math.max(1000, (42000 - dist * 40) * (0.8 + Math.random() * 0.5)));
-
-    totalCeOi += ceOi;
-    totalPeOi += peOi;
-
-    rows.push({
-      STRIKE: strike,
-      CE_OI: ceOi,
-      CE_CHNG_IN_OI: Math.round((Math.random() - 0.4) * 8000),
-      CE_VOLUME: Math.round(ceOi * (1.5 + Math.random())),
-      CE_IV: +(12.5 + Math.abs(i) * 0.3 + (Math.random() - 0.5)).toFixed(2),
-      CE_LTP: +ceLtp.toFixed(2),
-      CE_CHNG: +(Math.random() * 12 - 5).toFixed(2),
-      PE_OI: peOi,
-      PE_CHNG_IN_OI: Math.round((Math.random() - 0.4) * 8000),
-      PE_VOLUME: Math.round(peOi * (1.5 + Math.random())),
-      PE_IV: +(13.1 + Math.abs(i) * 0.28 + (Math.random() - 0.5)).toFixed(2),
-      PE_LTP: +peLtp.toFixed(2),
-      PE_CHNG: +(Math.random() * 12 - 5).toFixed(2),
-    });
-  }
-
-  const pcr = totalCeOi > 0 ? +(totalPeOi / totalCeOi).toFixed(2) : 1.0;
-
-  return {
-    symbol,
-    expiry: "31-Oct-2026",
-    spot,
-    pcr,
-    max_pain: atmBase,
-    total_ce_oi: totalCeOi,
-    total_pe_oi: totalPeOi,
-    nse_timestamp: new Date().toLocaleTimeString("en-IN", { hour12: false }) + " IST",
-    updated_at: new Date().toISOString(),
-    raw_data: rows,
-  };
 }

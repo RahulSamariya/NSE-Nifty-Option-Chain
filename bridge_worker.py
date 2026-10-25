@@ -12,6 +12,7 @@ import argparse
 import ctypes
 import datetime as dt
 import json
+import math
 import os
 import sys
 import time
@@ -23,6 +24,7 @@ import nse_core as nc
 # Windows API to prevent system sleep while worker is running
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
+MAX_SOURCE_AGE_SECONDS = 300
 
 
 def prevent_sleep():
@@ -59,6 +61,59 @@ def load_env_credentials():
     return url, key
 
 
+def _is_positive_finite(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0
+
+
+def validate_snapshot(df, spot, nse_timestamp, now=None):
+    """Reject incomplete or stale source data before it can replace a snapshot."""
+    source_time = nc.parse_nse_timestamp(nse_timestamp)
+    if source_time is None:
+        raise ValueError("NSE source timestamp is missing or invalid")
+    if not _is_positive_finite(spot):
+        raise ValueError("NSE spot value is missing or invalid")
+    if df.empty or "STRIKE" not in df.columns:
+        raise ValueError("NSE option-chain rows are empty or incomplete")
+    if not df["STRIKE"].map(_is_positive_finite).all():
+        raise ValueError("NSE option-chain contains an invalid strike")
+
+    now = now or nc.ist_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=source_time.tzinfo)
+    age_seconds = (now - source_time).total_seconds()
+    if age_seconds < -60:
+        raise ValueError("NSE source timestamp is in the future")
+    if age_seconds > MAX_SOURCE_AGE_SECONDS:
+        raise ValueError(f"NSE snapshot is stale ({age_seconds:.0f}s old)")
+    return float(spot)
+
+
+def upsert_live_snapshot(client, payload, now=None):
+    """Upsert a validated snapshot and stamp database update time in UTC."""
+    record = dict(payload)
+    record["updated_at"] = (now or dt.datetime.now(dt.timezone.utc)).astimezone(
+        dt.timezone.utc
+    ).isoformat()
+    result = client.table("option_chain_live").upsert(
+        record, on_conflict="symbol,expiry"
+    ).execute()
+    error = getattr(result, "error", None)
+    if error:
+        raise RuntimeError(f"Supabase live snapshot upsert failed: {error}")
+    return record
+
+
+def insert_history_snapshot(client, payload):
+    result = client.table("option_chain_history").insert(payload).execute()
+    error = getattr(result, "error", None)
+    if error:
+        raise RuntimeError(f"Supabase history insert failed: {error}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="NSE to Supabase Bridge Worker")
     parser.add_argument("--symbol", nargs="+", default=["NIFTY", "BANKNIFTY"],
@@ -74,11 +129,11 @@ def main():
         print("\n[!] Supabase credentials not found!")
         print("Please create a .env file in this directory with:")
         print("  SUPABASE_URL=https://your-project.supabase.co")
-        print("  SUPABASE_KEY=your-anon-or-service-role-key\n")
+        print("  SUPABASE_KEY=your-service-role-key (backend only)\n")
         sys.exit(1)
 
     sb: Client = create_client(supabase_url, supabase_key)
-    print(f"[*] Connected to Supabase: {supabase_url}")
+    print("[*] Connected to Supabase")
     print(f"[*] Monitoring symbols: {args.symbol} every {args.interval}s")
     print("[*] Press Ctrl+C to terminate.\n")
 
@@ -97,6 +152,7 @@ def main():
                 continue
 
             for sym in args.symbol:
+                nse_ts = "unavailable"
                 try:
                     expiries = nc.get_expiries(client, sym)
                     if not expiries:
@@ -105,10 +161,10 @@ def main():
 
                     raw = nc.get_chain(client, sym, expiry, kind="Indices")
                     df, spot, nse_ts = nc.parse(raw)
+                    spot = validate_snapshot(df, spot, nse_ts)
                     summary = nc.summarize(df, spot)
 
-                    # Prepare raw data payload
-                    rows = df.to_dict(orient="records")
+                    rows = json.loads(df.to_json(orient="records"))
                     payload = {
                         "symbol": sym,
                         "expiry": expiry,
@@ -121,10 +177,9 @@ def main():
                         "raw_data": rows,
                     }
 
-                    # 1. Upsert Live Snapshot (overwrites existing row for symbol+expiry)
-                    sb.table("option_chain_live").upsert(
-                        payload, on_conflict="symbol,expiry"
-                    ).execute()
+                    upsert_live_snapshot(sb, payload)
+                    print(f"[{now:%H:%M:%S}] {sym:<10} | NSE source: {nse_ts} | "
+                          "live snapshot upserted successfully")
 
                     # 2. Append 5-Minute History Record for Trends
                     last_t = last_history_time.get(sym, 0)
@@ -139,14 +194,13 @@ def main():
                             "total_pe_oi": payload["total_pe_oi"],
                             "nse_timestamp": nse_ts,
                         }
-                        sb.table("option_chain_history").insert(history_payload).execute()
+                        insert_history_snapshot(sb, history_payload)
                         last_history_time[sym] = time.time()
-
-                    print(f"[{now:%H:%M:%S}] {sym:<10} | Spot: {spot:<8} | PCR: {payload['pcr'] or 0:.2f} | "
-                          f"MaxPain: {payload['max_pain'] or 0} -> Synced to Supabase ✓")
+                        print(f"[{now:%H:%M:%S}] {sym:<10} | NSE source: {nse_ts} | "
+                              "history record inserted successfully")
 
                 except Exception as exc:
-                    print(f"[{now:%H:%M:%S}] {sym} Error: {exc}")
+                    print(f"[{now:%H:%M:%S}] {sym} | NSE source: {nse_ts} | FAILED: {exc}")
                     # Re-warm session on network errors
                     try:
                         client = nc.NSE()

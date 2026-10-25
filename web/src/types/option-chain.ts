@@ -34,7 +34,7 @@ export interface OptionChainRecord {
   max_pain: number | null;
   total_ce_oi: number;
   total_pe_oi: number;
-  nse_timestamp: string;
+  nse_timestamp: string | null;
   updated_at: string;
   raw_data: StrikeRow[];
 }
@@ -48,6 +48,6 @@ export interface OptionChainHistoryPoint {
   max_pain: number | null;
   total_ce_oi: number;
   total_pe_oi: number;
-  nse_timestamp: string;
+  nse_timestamp: string | null;
   created_at: string;
 }

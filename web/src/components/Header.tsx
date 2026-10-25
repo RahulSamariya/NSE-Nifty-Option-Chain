@@ -1,15 +1,16 @@
 "use client";
 
 import React from "react";
-import { Activity, RefreshCw, Smartphone, TrendingUp } from "lucide-react";
+import { Activity, RefreshCw, TrendingUp } from "lucide-react";
+import type { SnapshotStatus } from "@/lib/supabase";
 
 interface HeaderProps {
   selectedSymbol: string;
   onSelectSymbol: (sym: string) => void;
   symbols: string[];
   expiry: string;
-  nseTimestamp: string;
-  isLive: boolean;
+  nseTimestamp: string | null;
+  status: SnapshotStatus | "Loading";
   onRefresh: () => void;
   isLoading: boolean;
 }
@@ -20,7 +21,7 @@ export function Header({
   symbols,
   expiry,
   nseTimestamp,
-  isLive,
+  status,
   onRefresh,
   isLoading,
 }: HeaderProps) {
@@ -40,7 +41,7 @@ export function Header({
                   Terminal
                 </span>
               </h1>
-              <p className="text-xs text-zinc-400">Real-time Derivatives Analytics</p>
+              <p className="text-xs text-zinc-400">NSE option chain snapshots</p>
             </div>
           </div>
 
@@ -71,22 +72,22 @@ export function Header({
 
           <div className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400">
             <Activity className="w-3.5 h-3.5 text-zinc-400" />
-            <span>{nseTimestamp || "Loading..."}</span>
+            <span>{nseTimestamp || "Source timestamp unavailable"}</span>
           </div>
 
           <div
             className={`flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full border ${
-              isLive
+              status === "Live"
                 ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                : status === "Unavailable" || status === "Loading"
+                ? "bg-zinc-800 border-zinc-700 text-zinc-400"
                 : "bg-amber-500/10 border-amber-500/30 text-amber-400"
             }`}
           >
             <span
-              className={`w-2 h-2 rounded-full ${
-                isLive ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-              }`}
+              className={`w-2 h-2 rounded-full ${status === "Live" ? "bg-emerald-400" : "bg-amber-400"}`}
             />
-            {isLive ? "Live Stream" : "Last Close"}
+            {status}
           </div>
 
           <button

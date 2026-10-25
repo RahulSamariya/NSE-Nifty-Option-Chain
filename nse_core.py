@@ -127,8 +127,23 @@ def market_open(now=None):
 
 
 # ------------------------------------------------------------------- parsing
+def parse_nse_timestamp(ts):
+    """Parse NSE's exchange-local timestamp as an IST-aware datetime."""
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    try:
+        parsed = dt.datetime.strptime(ts.strip(), "%d-%b-%Y %H:%M:%S")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=dt.timezone(dt.timedelta(hours=5, minutes=30)))
+
+
 def parse(data: dict):
+    if not isinstance(data, dict) or not isinstance(data.get("records"), dict):
+        raise ValueError("NSE response is missing its records object")
     rec = data["records"]
+    if not isinstance(rec.get("data"), list):
+        raise ValueError("NSE response is missing its option-chain rows")
     spot = rec.get("underlyingValue")
     ts = rec.get("timestamp")
     rows = []
@@ -142,6 +157,8 @@ def parse(data: dict):
             row["CE_" + name] = ce.get(k)
             row["PE_" + name] = pe.get(k)
         rows.append(row)
+    if not rows:
+        raise ValueError("NSE response contains no valid option-chain rows")
     df = pd.DataFrame(rows).sort_values("STRIKE").reset_index(drop=True)
     return df, spot, ts
 

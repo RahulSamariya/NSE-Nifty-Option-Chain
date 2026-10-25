@@ -1,13 +1,13 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Header } from "@/components/Header";
 import { MetricsBar } from "@/components/MetricsBar";
 import { OptionChainTable } from "@/components/OptionChainTable";
 import { ChartsView } from "@/components/ChartsView";
 import { OptionChainRecord, OptionChainHistoryPoint } from "@/types/option-chain";
-import { supabase, generateMockOptionChain } from "@/lib/supabase";
-import { BarChart3, Table, SlidersHorizontal, ShieldCheck } from "lucide-react";
+import { getSnapshotStatus, isOptionChainRecord, supabase } from "@/lib/supabase";
+import { AlertCircle, BarChart3, Table, SlidersHorizontal } from "lucide-react";
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 const STRIKE_RANGES = [
@@ -23,87 +23,150 @@ export default function Home() {
   const [history, setHistory] = useState<OptionChainHistoryPoint[]>([]);
   const [activeTab, setActiveTab] = useState<"table" | "charts">("table");
   const [strikeRange, setStrikeRange] = useState(15);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isLive, setIsLive] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const currentRequestId = ++requestId.current;
     setIsLoading(true);
+    setConnectionError(null);
     try {
-      if (supabase) {
-        // Query live snapshot from Supabase
-        const { data: liveRows, error } = await supabase
-          .from("option_chain_live")
-          .select("*")
-          .eq("symbol", selectedSymbol)
-          .single();
-
-        if (error || !liveRows) {
-          // If no row found, use mock preview data
-          setData(generateMockOptionChain(selectedSymbol));
-          setIsLive(false);
-        } else {
-          setData(liveRows as OptionChainRecord);
-          setIsLive(true);
-        }
-
-        // Query history timeline
-        const { data: histRows } = await supabase
-          .from("option_chain_history")
-          .select("*")
-          .eq("symbol", selectedSymbol)
-          .order("created_at", { ascending: true })
-          .limit(30);
-
-        if (histRows && histRows.length > 0) {
-          setHistory(histRows as OptionChainHistoryPoint[]);
-        }
-      } else {
-        // Fallback when Supabase env vars are not set
-        setData(generateMockOptionChain(selectedSymbol));
-        setIsLive(false);
+      if (!supabase) {
+        throw new Error("Supabase is not configured. Set the public URL and anon key.");
       }
-    } catch {
-      setData(generateMockOptionChain(selectedSymbol));
-      setIsLive(false);
+
+      const { data: liveRows, error: liveError } = await supabase
+        .from("option_chain_live")
+        .select("*")
+        .eq("symbol", selectedSymbol)
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      if (liveError) throw new Error(`Snapshot query failed: ${liveError.message}`);
+
+      const latest = Array.isArray(liveRows)
+        ? liveRows.find((row) => isOptionChainRecord(row, selectedSymbol))
+        : null;
+      if (currentRequestId !== requestId.current) return;
+      setData((latest as OptionChainRecord | undefined) ?? null);
+      setHistoryError(null);
+
+      if (!latest) {
+        setHistory([]);
+        return;
+      }
+
+      const { data: historyRows, error: historyQueryError } = await supabase
+        .from("option_chain_history")
+        .select("*")
+        .eq("symbol", selectedSymbol)
+        .eq("expiry", latest.expiry)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (currentRequestId !== requestId.current) return;
+      if (historyQueryError) {
+        setHistory([]);
+        setHistoryError(`History query failed: ${historyQueryError.message}`);
+      } else {
+        setHistory((historyRows ?? []).reverse() as OptionChainHistoryPoint[]);
+      }
+    } catch (error) {
+      if (currentRequestId === requestId.current) {
+        setConnectionError(error instanceof Error ? error.message : "Supabase connection failed.");
+        setHistory([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (currentRequestId === requestId.current) setIsLoading(false);
     }
   }, [selectedSymbol]);
 
   useEffect(() => {
-    fetchData();
+    const initialFetch = window.setTimeout(() => {
+      void fetchData();
+    }, 0);
     const interval = setInterval(() => {
       fetchData();
     }, 30000); // 30 second auto-poll
-    return () => clearInterval(interval);
+    return () => {
+      window.clearTimeout(initialFetch);
+      clearInterval(interval);
+    };
   }, [fetchData]);
+
+  const visibleData = data?.symbol === selectedSymbol ? data : null;
+  const status = isLoading && !visibleData
+    ? "Loading"
+    : visibleData
+    ? getSnapshotStatus(visibleData.nse_timestamp)
+    : "Unavailable";
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500 selection:text-zinc-950">
       <Header
         selectedSymbol={selectedSymbol}
         onSelectSymbol={(sym) => {
+          requestId.current += 1;
           setSelectedSymbol(sym);
+          setData(null);
+          setHistory([]);
+          setConnectionError(null);
+          setHistoryError(null);
         }}
         symbols={SYMBOLS}
-        expiry={data?.expiry || ""}
-        nseTimestamp={data?.nse_timestamp || ""}
-        isLive={isLive}
+        expiry={visibleData?.expiry || ""}
+        nseTimestamp={visibleData?.nse_timestamp ?? null}
+        status={status}
         onRefresh={fetchData}
         isLoading={isLoading}
       />
 
       <main className="max-w-7xl mx-auto px-4 py-4">
         {/* Top Analytics Metrics */}
-        {data && (
+        {visibleData && (
           <MetricsBar
-            symbol={data.symbol}
-            spot={data.spot}
-            pcr={data.pcr}
-            maxPain={data.max_pain}
-            totalCeOi={data.total_ce_oi}
-            totalPeOi={data.total_pe_oi}
+            symbol={visibleData.symbol}
+            spot={visibleData.spot}
+            pcr={visibleData.pcr}
+            maxPain={visibleData.max_pain}
+            totalCeOi={visibleData.total_ce_oi}
+            totalPeOi={visibleData.total_pe_oi}
           />
+        )}
+
+        {connectionError && (
+          <div role="alert" className="my-4 flex items-start gap-3 border border-rose-900/70 bg-rose-950/30 p-4 text-sm text-rose-200">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-semibold">Supabase connection error</p>
+              <p className="mt-1 text-rose-200/80">{connectionError}</p>
+              {visibleData && <p className="mt-1 text-rose-200/80">Showing the last loaded NSE snapshot; its source status is shown above.</p>}
+            </div>
+          </div>
+        )}
+
+        {historyError && (
+          <div role="alert" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
+            {historyError}
+          </div>
+        )}
+
+        {!isLoading && !connectionError && !visibleData && (
+          <div className="my-6 border border-zinc-800 bg-zinc-900/40 p-6 text-sm text-zinc-300">
+            No valid NSE snapshot is available for {selectedSymbol}.
+          </div>
+        )}
+
+        {visibleData && status === "Stale" && (
+          <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
+            This snapshot is stale. Source timestamp: {visibleData.nse_timestamp || "unavailable"}.
+          </div>
+        )}
+
+        {visibleData && status === "Unavailable" && (
+          <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
+            The source timestamp is missing or invalid; freshness cannot be confirmed.
+          </div>
         )}
 
         {/* Tab & Filter Controls */}
@@ -159,41 +222,24 @@ export default function Home() {
         </div>
 
         {/* Content View */}
-        {data && (
+        {visibleData && (
           <div>
             {activeTab === "table" ? (
               <OptionChainTable
-                rows={data.raw_data || []}
-                spot={data.spot}
+                rows={visibleData.raw_data || []}
+                spot={visibleData.spot}
                 strikeRange={strikeRange}
               />
             ) : (
               <ChartsView
-                rows={data.raw_data || []}
-                spot={data.spot}
+                rows={visibleData.raw_data || []}
+                spot={visibleData.spot}
                 history={history}
               />
             )}
           </div>
         )}
 
-        {/* Info Banner when in Demo/Preview Mode */}
-        {!isLive && (
-          <div className="mt-8 p-4 rounded-xl border border-zinc-800/80 bg-zinc-900/40 text-xs text-zinc-400 flex items-start gap-3">
-            <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-zinc-200">
-                Preview Mode Active (Supabase Not Connected)
-              </p>
-              <p className="mt-1 text-zinc-400">
-                To stream real-time NSE data to this web app, run your local bridge worker:
-              </p>
-              <code className="inline-block mt-2 px-2.5 py-1 bg-zinc-950 border border-zinc-800 rounded text-emerald-400 font-mono text-[11px]">
-                python bridge_worker.py --symbol NIFTY BANKNIFTY
-              </code>
-            </div>
-          </div>
-        )}
       </main>
 
       {/* Footer */}
