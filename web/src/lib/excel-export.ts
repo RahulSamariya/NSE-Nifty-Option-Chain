@@ -22,6 +22,20 @@ export interface WorkbookOptions {
   rangeLabel?: string;
   fieldsLabel?: string;
   now?: Date;
+  /**
+   * Present when the workbook was built from a CSV the user imported in the
+   * browser. Switches the summary from the hosted-API wording to honest
+   * import provenance: file name, import time, and whether the file carried
+   * an exchange timestamp at all.
+   */
+  importInfo?: ImportProvenance;
+}
+
+export interface ImportProvenance {
+  fileName: string;
+  fileSize: number;
+  importedAt: string;
+  exchangeTimestamp: string | null;
 }
 
 const HEADER_FILL = {
@@ -84,7 +98,17 @@ function formatAge(seconds: number | null): string {
 
 function addSummarySheet(
   workbook: ExcelJS.Workbook,
-  { record, status, ageSeconds, csvUrl, chainRows, rangeLabel: rangeText, fieldsLabel, now }: WorkbookOptions,
+  {
+    record,
+    status,
+    ageSeconds,
+    csvUrl,
+    chainRows,
+    rangeLabel: rangeText,
+    fieldsLabel,
+    now,
+    importInfo,
+  }: WorkbookOptions,
 ): void {
   const sheet = workbook.addWorksheet("Summary", {
     properties: { tabColor: { argb: "FF059669" }, defaultRowHeight: 18 },
@@ -107,14 +131,23 @@ function addSummarySheet(
 
   sheet.mergeCells("A2:D2");
   const subtitle = sheet.getCell("A2");
-  subtitle.value =
-    "Generated from the validated NSE snapshot stored in Supabase. " +
-    "This workbook is a point-in-time snapshot and does not update by itself.";
+  subtitle.value = importInfo
+    ? `Built in your browser from the imported file "${importInfo.fileName}". ` +
+      "This workbook is a point-in-time copy of that file and does not update by itself."
+    : "Generated from the validated NSE snapshot stored in Supabase. " +
+      "This workbook is a point-in-time snapshot and does not update by itself.";
   subtitle.font = { size: 10, color: { argb: "FF475569" } };
   subtitle.alignment = { vertical: "middle", wrapText: true, indent: 1 };
   sheet.getRow(2).height = 28;
 
   const exportedRows = chainRows ?? record.raw_data;
+  // An imported file has no exchange timestamp unless the file itself carried
+  // one; the import time is recorded separately and never presented as NSE's.
+  const sourceTimestamp = importInfo
+    ? importInfo.exchangeTimestamp ?? "Not present in the imported file"
+    : record.nse_timestamp ?? "unavailable";
+  const statusLabel = importInfo ? "Imported snapshot" : status;
+
   const rows: Array<[string, ExcelJS.CellValue, string?]> = [
     ["Symbol", record.symbol],
     ["Expiry", record.expiry],
@@ -127,12 +160,22 @@ function addSummarySheet(
     ["Import fields", fieldsLabel ?? "All fields"],
     ["Strikes exported", exportedRows.length, "#,##0"],
     ["Strikes in raw data", record.raw_data.length, "#,##0"],
-    ["NSE source timestamp", record.nse_timestamp ?? "unavailable"],
-    ["Snapshot status", status],
+    [importInfo ? "Exchange timestamp" : "NSE source timestamp", sourceTimestamp],
+    [importInfo ? "Data source" : "Snapshot status", statusLabel],
     ["Snapshot age at export", formatAge(ageSeconds)],
-    ["Snapshot written (DB)", istString(record.updated_at)],
+    [
+      importInfo ? "Imported at (local)" : "Snapshot written (DB)",
+      istString(importInfo ? importInfo.importedAt : record.updated_at),
+    ],
     ["Workbook built at", istString(now ?? new Date())],
   ];
+
+  if (importInfo) {
+    rows.splice(rows.length - 1, 0, [
+      "Source file size",
+      `${importInfo.fileSize.toLocaleString("en-IN")} bytes`,
+    ]);
+  }
 
   rows.forEach(([label, value, fmt], index) => {
     const rowNumber = 4 + index;
@@ -142,8 +185,10 @@ function addSummarySheet(
     labelCell.font = { bold: true, color: { argb: "FF334155" } };
     valueCell.value = value as ExcelJS.CellValue;
     if (fmt && typeof value === "number") valueCell.numFmt = fmt;
-    if (label === "Snapshot status") {
-      const style = STATUS_STYLE[status];
+    if (label === "Snapshot status" || label === "Data source") {
+      const style = importInfo
+        ? { fill: "FFDBEAFE", text: "FF1E40AF" }
+        : STATUS_STYLE[status];
       valueCell.fill = patternFill(style.fill);
       valueCell.font = { bold: true, color: { argb: style.text } };
     }
@@ -151,24 +196,43 @@ function addSummarySheet(
 
   const sectionRow = 4 + rows.length + 1; // 17
   const section = sheet.getCell(sectionRow, 1);
-  section.value = "Refresh with Excel Power Query";
+  section.value = importInfo
+    ? "Refreshing this workbook from a local CSV"
+    : "Refresh with Excel Power Query";
   section.font = { bold: true, size: 12, color: { argb: "FF0F172A" } };
 
   const endpointRow = sectionRow + 1;
-  sheet.getCell(endpointRow, 1).value = "Stable CSV endpoint";
-  sheet.getCell(endpointRow, 1).font = { bold: true, color: { argb: "FF334155" } };
-  sheet.mergeCells(endpointRow, 2, endpointRow, 4);
-  const endpoint = sheet.getCell(endpointRow, 2);
-  endpoint.value = csvUrl;
-  endpoint.font = { size: 9, color: { argb: "FF1D4ED8" }, underline: true };
-  endpoint.alignment = { wrapText: true };
+  if (importInfo) {
+    sheet.getCell(endpointRow, 1).value = "Source file";
+    sheet.getCell(endpointRow, 1).font = { bold: true, color: { argb: "FF334155" } };
+    sheet.mergeCells(endpointRow, 2, endpointRow, 4);
+    const endpoint = sheet.getCell(endpointRow, 2);
+    endpoint.value = importInfo.fileName;
+    endpoint.font = { size: 9, color: { argb: "FF1D4ED8" } };
+    endpoint.alignment = { wrapText: true };
+  } else {
+    sheet.getCell(endpointRow, 1).value = "Stable CSV endpoint";
+    sheet.getCell(endpointRow, 1).font = { bold: true, color: { argb: "FF334155" } };
+    sheet.mergeCells(endpointRow, 2, endpointRow, 4);
+    const endpoint = sheet.getCell(endpointRow, 2);
+    endpoint.value = csvUrl;
+    endpoint.font = { size: 9, color: { argb: "FF1D4ED8" }, underline: true };
+    endpoint.alignment = { wrapText: true };
+  }
 
-  const notes = [
-    "1. In Excel choose Data > Get Data > From Other Sources > Blank Query > Advanced Editor.",
-    "2. Paste the M query from docs/EXCEL_POWER_QUERY.md, using the endpoint above.",
-    "3. Load the query into a table. Data > Refresh All then re-reads the newest stored snapshot.",
-    "Refreshing re-queries Supabase. It does not make Excel contact NSE; the Python worker does that.",
-  ];
+  const notes = importInfo
+    ? [
+        "This workbook is a static copy of the imported CSV. It does not refresh by itself.",
+        "To pull newer data, download a fresh CSV from the NSE option chain page and import it again.",
+        "For a refreshable workbook, use the local-CSV Excel setup package on the website, which",
+        "points Power Query at a CSV path you choose on this computer.",
+      ]
+    : [
+        "1. In Excel choose Data > Get Data > From Other Sources > Blank Query > Advanced Editor.",
+        "2. Paste the M query from docs/EXCEL_POWER_QUERY.md, using the endpoint above.",
+        "3. Load the query into a table. Data > Refresh All then re-reads the newest stored snapshot.",
+        "Refreshing re-queries Supabase. It does not make Excel contact NSE; the Python worker does that.",
+      ];
   notes.forEach((note, index) => {
     const row = endpointRow + 2 + index;
     sheet.mergeCells(row, 1, row, 4);
@@ -181,7 +245,7 @@ function addSummarySheet(
 
 function addChainSheet(
   workbook: ExcelJS.Workbook,
-  { record, status, chainRows, chainFields }: WorkbookOptions,
+  { record, status, chainRows, chainFields, importInfo }: WorkbookOptions,
 ): void {
   const rows = chainRows ?? record.raw_data;
   const extras = chainFields
@@ -276,12 +340,13 @@ function addChainSheet(
 
   // A small caption above the filter is not possible (header must start row 1),
   // so record the status in the sheet properties instead.
-  sheet.headerFooter.oddFooter = `&L${record.symbol} ${record.expiry} - ${status}&RPage &P of &N`;
+  const footerLabel = importInfo ? "Imported Snapshot" : status;
+  sheet.headerFooter.oddFooter = `&L${record.symbol} ${record.expiry} - ${footerLabel}&RPage &P of &N`;
 }
 
 function addRawSheet(
   workbook: ExcelJS.Workbook,
-  { record, status, now }: WorkbookOptions,
+  { record, status, now, importInfo }: WorkbookOptions,
 ): void {
   const fields = chainFieldKeys(record.raw_data);
   const sheet = workbook.addWorksheet("Raw Data", {
@@ -324,10 +389,10 @@ function addRawSheet(
     record.max_pain,
     record.total_ce_oi,
     record.total_pe_oi,
-    record.nse_timestamp,
-    record.updated_at,
+    importInfo ? (importInfo.exchangeTimestamp ?? null) : record.nse_timestamp,
+    importInfo ? importInfo.importedAt : record.updated_at,
     readAt,
-    status,
+    importInfo ? "Imported Snapshot" : status,
   ];
 
   for (const strike of record.raw_data) {
@@ -349,8 +414,10 @@ export async function buildOptionChainWorkbook(
   workbook.creator = "NSE Option Chain";
   workbook.title = `${options.record.symbol} ${options.record.expiry} snapshot`;
   workbook.subject = "NSE option chain snapshot";
-  workbook.description =
-    "Snapshot of the validated NSE option chain stored in Supabase. Not a live NSE feed.";
+  workbook.description = options.importInfo
+    ? `Snapshot built in the browser from the imported file "${options.importInfo.fileName}". ` +
+      "Not a live NSE feed."
+    : "Snapshot of the validated NSE option chain stored in Supabase. Not a live NSE feed.";
   workbook.created = options.now ?? new Date();
   workbook.modified = options.now ?? new Date();
 

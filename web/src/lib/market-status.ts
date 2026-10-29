@@ -93,13 +93,85 @@ function istParts(date: Date): IstParts {
   };
 }
 
-export function isIndianMarketOpen(now = new Date()): boolean {
-  const { weekday, minuteOfDay } = istParts(now);
-  return (
-    WEEKDAYS.includes(weekday) &&
-    minuteOfDay >= SESSION_OPEN_MIN &&
-    minuteOfDay <= SESSION_CLOSE_MIN
-  );
+export const NSE_HOLIDAYS_2026: readonly string[] = [
+  "2026-01-26", // Republic Day
+  "2026-03-03", // Holi
+  "2026-03-26", // Shri Ram Navami
+  "2026-03-31", // Shri Mahavir Jayanti
+  "2026-04-03", // Good Friday
+  "2026-04-14", // Dr. Baba Saheb Ambedkar Jayanti
+  "2026-05-01", // Maharashtra Day
+  "2026-05-28", // Bakri Id
+  "2026-06-26", // Muharram
+  "2026-09-14", // Ganesh Chaturthi
+  "2026-10-02", // Mahatma Gandhi Jayanti
+  "2026-10-20", // Dussehra
+  "2026-11-10", // Diwali-Balipratipada
+  "2026-11-24", // Gurunanak Jayanti
+  "2026-12-25", // Christmas
+];
+
+export interface SpecialSession {
+  date: string;
+  openMinute: number;
+  closeMinute: number;
+}
+
+export const SPECIAL_SESSIONS_2026: readonly SpecialSession[] = [
+  {
+    date: "2026-11-08", // Diwali Muhurat Trading
+    openMinute: 18 * 60, // 18:00 IST
+    closeMinute: 19 * 60 + 15, // 19:15 IST
+  },
+];
+
+export type MarketSessionReason =
+  | "open"
+  | "weekend"
+  | "exchange_holiday"
+  | "outside_trading_hours";
+
+export interface MarketSessionInfo {
+  isOpen: boolean;
+  reason: MarketSessionReason;
+}
+
+export function getMarketSessionInfo(
+  now = new Date(),
+  holidays: readonly string[] = NSE_HOLIDAYS_2026,
+  specialSessions: readonly SpecialSession[] = SPECIAL_SESSIONS_2026,
+): MarketSessionInfo {
+  const { weekday, dateKey, minuteOfDay } = istParts(now);
+
+  const special = specialSessions.find((s) => s.date === dateKey);
+  if (special) {
+    if (minuteOfDay >= special.openMinute && minuteOfDay <= special.closeMinute) {
+      return { isOpen: true, reason: "open" };
+    }
+    return { isOpen: false, reason: "outside_trading_hours" };
+  }
+
+  if (!WEEKDAYS.includes(weekday)) {
+    return { isOpen: false, reason: "weekend" };
+  }
+
+  if (holidays.includes(dateKey)) {
+    return { isOpen: false, reason: "exchange_holiday" };
+  }
+
+  if (minuteOfDay < SESSION_OPEN_MIN || minuteOfDay > SESSION_CLOSE_MIN) {
+    return { isOpen: false, reason: "outside_trading_hours" };
+  }
+
+  return { isOpen: true, reason: "open" };
+}
+
+export function isIndianMarketOpen(
+  now = new Date(),
+  holidays: readonly string[] = NSE_HOLIDAYS_2026,
+  specialSessions: readonly SpecialSession[] = SPECIAL_SESSIONS_2026,
+): boolean {
+  return getMarketSessionInfo(now, holidays, specialSessions).isOpen;
 }
 
 /**
@@ -112,8 +184,10 @@ export function isIndianMarketOpen(now = new Date()): boolean {
 export function getSnapshotFreshness(
   nseTimestamp: string | null | undefined,
   now = new Date(),
+  holidays: readonly string[] = NSE_HOLIDAYS_2026,
+  specialSessions: readonly SpecialSession[] = SPECIAL_SESSIONS_2026,
 ): SnapshotFreshness {
-  const marketOpen = isIndianMarketOpen(now);
+  const marketOpen = isIndianMarketOpen(now, holidays, specialSessions);
   const sourceTime = parseNseTimestamp(nseTimestamp);
 
   if (!sourceTime) {
@@ -136,10 +210,14 @@ export function getSnapshotFreshness(
 
   const nowIst = istParts(now);
   const srcIst = istParts(sourceTime);
-  const sourceInSession =
-    WEEKDAYS.includes(srcIst.weekday) &&
-    srcIst.minuteOfDay >= SESSION_OPEN_MIN &&
-    srcIst.minuteOfDay <= SESSION_LAST_STAMP_MIN;
+  const specialSrc = specialSessions.find((s) => s.date === srcIst.dateKey);
+  const sourceInSession = specialSrc
+    ? srcIst.minuteOfDay >= specialSrc.openMinute &&
+      srcIst.minuteOfDay <= specialSrc.closeMinute + 15
+    : WEEKDAYS.includes(srcIst.weekday) &&
+      !holidays.includes(srcIst.dateKey) &&
+      srcIst.minuteOfDay >= SESSION_OPEN_MIN &&
+      srcIst.minuteOfDay <= SESSION_LAST_STAMP_MIN;
 
   if (!sourceInSession) {
     return { ...base, status: "Stale", reason: "outside_session" };

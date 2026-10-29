@@ -170,7 +170,7 @@ describe("GET /api/health", () => {
     expect(body.symbols[0].symbol).toBe("NIFTY");
     expect(body.symbols[0].spot).toBe(22600.5);
     expect(["Live", "Last Close", "Stale", "Unavailable"]).toContain(body.symbols[0].status);
-    expect(["never", "running", "delayed", "stalled"]).toContain(body.worker.state);
+    expect(["never", "running", "delayed", "stalled", "idle_off_hours"]).toContain(body.worker.state);
     expect(JSON.stringify(body)).not.toMatch(/test-anon|service_role|sb_secret|supabase\.co/i);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
@@ -221,5 +221,136 @@ describe("GET /api/health", () => {
     const text = await response.text();
     expect(text).not.toContain("password authentication");
     spy.mockRestore();
+  });
+
+  it("reports idle_off_hours on weekends and holidays without declaring stalled", async () => {
+    // Sunday noon IST
+    mockClient.mockReturnValue(
+      fakeSupabase({
+        data: [
+          {
+            symbol: "NIFTY",
+            expiry: "27-Oct-2026",
+            spot: 22600.5,
+            nse_timestamp: "23-Oct-2026 15:40:00",
+            updated_at: "2026-10-23T10:05:00Z",
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    const weekendResp = await HEALTH(
+      new Request("http://localhost/api/health?test_now=2026-10-25T06:30:00Z"),
+    );
+    const weekendBody = await weekendResp.json();
+    expect(weekendBody.market_open).toBe(false);
+    expect(weekendBody.market_session.reason).toBe("weekend");
+    expect(weekendBody.worker.state).toBe("idle_off_hours");
+    expect(weekendBody.worker.heartbeat.status).toBe("idle_off_hours");
+
+    // Republic Day holiday (Monday 2026-01-26 11:00 IST)
+    mockClient.mockReturnValue(
+      fakeSupabase({
+        data: [
+          {
+            symbol: "NIFTY",
+            expiry: "29-Jan-2026",
+            spot: 22600.5,
+            nse_timestamp: "23-Jan-2026 15:40:00",
+            updated_at: "2026-01-23T10:05:00Z",
+          },
+        ],
+        error: null,
+      }),
+    );
+    const holidayResp = await HEALTH(
+      new Request("http://localhost/api/health?test_now=2026-01-26T05:30:00Z"),
+    );
+    const holidayBody = await holidayResp.json();
+    expect(holidayBody.market_open).toBe(false);
+    expect(holidayBody.market_session.reason).toBe("exchange_holiday");
+    expect(holidayBody.worker.state).toBe("idle_off_hours");
+  });
+
+  it("reports delayed and stalled during market hours when writes are overdue", async () => {
+    // Monday 10:00 IST (2026-10-26T04:30:00Z)
+    // 1) Write is 20 minutes old -> delayed
+    mockClient.mockReturnValue(
+      fakeSupabase({
+        data: [
+          {
+            symbol: "NIFTY",
+            expiry: "27-Oct-2026",
+            spot: 22600.5,
+            nse_timestamp: "26-Oct-2026 09:40:00",
+            updated_at: "2026-10-26T04:10:00Z",
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    const delayedResp = await HEALTH(
+      new Request("http://localhost/api/health?test_now=2026-10-26T04:30:00Z"),
+    );
+    const delayedBody = await delayedResp.json();
+    expect(delayedBody.market_open).toBe(true);
+    expect(delayedBody.market_session.reason).toBe("open");
+    expect(delayedBody.worker.state).toBe("delayed");
+    expect(delayedBody.worker.database_write.write_state).toBe("delayed");
+
+    // 2) Write is 2 hours old -> stalled
+    mockClient.mockReturnValue(
+      fakeSupabase({
+        data: [
+          {
+            symbol: "NIFTY",
+            expiry: "27-Oct-2026",
+            spot: 22600.5,
+            nse_timestamp: "26-Oct-2026 07:40:00",
+            updated_at: "2026-10-26T02:30:00Z",
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    const stalledResp = await HEALTH(
+      new Request("http://localhost/api/health?test_now=2026-10-26T04:30:00Z"),
+    );
+    const stalledBody = await stalledResp.json();
+    expect(stalledBody.market_open).toBe(true);
+    expect(stalledBody.worker.state).toBe("stalled");
+    expect(stalledBody.worker.database_write.write_state).toBe("stalled");
+  });
+
+  it("separately reports connectivity, heartbeat, write time, and NSE source timestamp", async () => {
+    mockClient.mockReturnValue(
+      fakeSupabase({
+        data: [
+          {
+            symbol: "NIFTY",
+            expiry: "27-Oct-2026",
+            spot: 22600.5,
+            nse_timestamp: "26-Oct-2026 10:00:00",
+            updated_at: "2026-10-26T04:30:30Z",
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    const resp = await HEALTH(
+      new Request("http://localhost/api/health?test_now=2026-10-26T04:31:00Z"),
+    );
+    const body = await resp.json();
+
+    expect(body.database.reachable).toBe(true);
+    expect(body.worker.heartbeat.status).toBe("active");
+    expect(body.worker.heartbeat.last_seen_at).toBe("2026-10-26T04:30:30Z");
+    expect(body.worker.database_write.last_write_at).toBe("2026-10-26T04:30:30Z");
+    expect(body.worker.nse_source.latest_timestamp).toBe("26-Oct-2026 10:00:00");
+    expect(body.worker.nse_source.freshness_status).toBe("Live");
   });
 });

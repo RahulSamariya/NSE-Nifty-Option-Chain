@@ -68,8 +68,9 @@ export interface ApiErrorResponse {
   error: { code: string; message: string };
 }
 
-/** What the badge shows: the snapshot status, plus transport states. */
-export type UiStatus = SnapshotStatus | "Loading" | "Error";
+/** What the badge shows: the snapshot status, plus transport states.
+ * "Imported" is a file the user uploaded in the browser — it is never live. */
+export type UiStatus = SnapshotStatus | "Loading" | "Error" | "Imported";
 
 export type RefreshMinutes = 1 | 5 | 15 | 30;
 

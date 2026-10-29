@@ -1,11 +1,28 @@
-# NSE trading holidays — one date per line, ISO format: YYYY-MM-DD
-#
-# The worker skips these dates in addition to weekends (Mon-Fri 09:15-15:35 IST).
+# NSE trading holidays (Equity & Equity Derivatives) — calendar year 2026
+# One date per line, ISO format: YYYY-MM-DD
 # Keep this file in sync with the official NSE holiday list:
 #   https://www.nseindia.com/resources/exchange-communication-holidays
+
+2026-01-26  # Republic Day (Monday)
+2026-03-03  # Holi (Tuesday)
+2026-03-26  # Shri Ram Navami (Thursday)
+2026-03-31  # Shri Mahavir Jayanti (Tuesday)
+2026-04-03  # Good Friday (Friday)
+2026-04-14  # Dr. Baba Saheb Ambedkar Jayanti (Tuesday)
+2026-05-01  # Maharashtra Day (Friday)
+2026-05-28  # Bakri Id (Thursday)
+2026-06-26  # Muharram (Friday)
+2026-09-14  # Ganesh Chaturthi (Monday)
+2026-10-02  # Mahatma Gandhi Jayanti (Friday)
+2026-10-20  # Dussehra (Tuesday)
+2026-11-10  # Diwali-Balipratipada (Tuesday)
+2026-11-24  # Gurunanak Jayanti (Tuesday)
+2026-12-25  # Christmas (Friday)
+
+# Note on holidays falling on weekends (already covered by standard weekend closure):
+# 2026-02-15 (Sunday - Mahashivratri)
+# 2026-03-21 (Saturday - Id-Ul-Fitr)
+# 2026-08-15 (Saturday - Independence Day)
 #
-# Only real, verified exchange holidays belong here. An empty or missing file
-# means "weekdays only" and is reported in the worker's startup log.
-#
-# Example (uncomment only after verifying the date on the NSE page above):
-# 2026-01-26   # Republic Day
+# Special Trading Sessions:
+# 2026-11-08 (Sunday - Diwali Laxmi Pujan - Muhurat Trading session 18:00-19:15 IST)

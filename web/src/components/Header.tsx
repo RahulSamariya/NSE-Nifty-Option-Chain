@@ -81,6 +81,8 @@ export function Header({
             className={`flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full border ${
               status === "Live"
                 ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                : status === "Imported"
+                ? "bg-sky-500/10 border-sky-500/30 text-sky-300"
                 : status === "Unavailable" || status === "Loading"
                 ? "bg-zinc-800 border-zinc-700 text-zinc-400"
                 : status === "Error"
@@ -92,6 +94,8 @@ export function Header({
               className={`w-2 h-2 rounded-full ${
                 status === "Live"
                   ? "bg-emerald-400"
+                  : status === "Imported"
+                  ? "bg-sky-400"
                   : status === "Error"
                   ? "bg-rose-400"
                   : status === "Unavailable" || status === "Loading"

@@ -141,6 +141,39 @@ describe("parseHistoryQuery", () => {
       });
     }
   });
+
+  it("rejects unknown query parameters instead of silently ignoring them", () => {
+    // Regression: `points` used to be swallowed, which read as if it worked.
+    expect(parseHistory("symbol=NIFTY&expiry=27-Oct-2026&points=5")).toMatchObject({
+      ok: false,
+      status: 400,
+      code: "unknown_parameter",
+    });
+  });
+
+  it("names the offending parameter and the allowed keys", () => {
+    const result = parseHistory("symbol=NIFTY&expiry=27-Oct-2026&points=5");
+    expect(result.ok === false && result.message).toContain("points");
+    expect(result.ok === false && result.message).toContain("limit");
+  });
+});
+
+describe("unknown query parameters", () => {
+  it("rejects extra keys on the option-chain route", () => {
+    expect(parse("symbol=NIFTY&bogus=1")).toMatchObject({
+      ok: false,
+      status: 400,
+      code: "unknown_parameter",
+    });
+  });
+
+  it("rejects extra keys on the expiries route", () => {
+    expect(parseSymbolQuery(new URLSearchParams("symbol=NIFTY&format=csv"))).toMatchObject({
+      ok: false,
+      status: 400,
+      code: "unknown_parameter",
+    });
+  });
 });
 
 describe("canonicalExpiry", () => {

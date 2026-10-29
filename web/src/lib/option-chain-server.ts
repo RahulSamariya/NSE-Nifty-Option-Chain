@@ -48,7 +48,13 @@ export interface SnapshotMeta {
  */
 export function createReadClient(): SupabaseClient | null {
   const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-  const key = (process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+  // Read-only access: the anon key only. SUPABASE_KEY (service_role) is
+  // deliberately NOT accepted here — the web API must never run privileged.
+  const key = (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ""
+  ).trim();
   if (!url || !key) return null;
 
   return createClient(url, key, {

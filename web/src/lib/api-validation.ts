@@ -31,6 +31,27 @@ export type QueryValidation<T> =
 export const MAX_HISTORY_LIMIT = 240;
 export const DEFAULT_HISTORY_LIMIT = 60;
 
+/** Query keys each route accepts; anything else is rejected as a typo. */
+const OPTION_CHAIN_KEYS = ["symbol", "expiry", "format", "range", "fields"];
+const HISTORY_KEYS = ["symbol", "expiry", "limit"];
+const SYMBOL_QUERY_KEYS = ["symbol"];
+
+function rejectUnknownKeys(
+  searchParams: URLSearchParams,
+  allowed: readonly string[],
+): QueryValidation<never> | null {
+  for (const key of searchParams.keys()) {
+    if (!allowed.includes(key)) {
+      return fail(
+        400,
+        "unknown_parameter",
+        `Unknown query parameter "${key}". Allowed: ${allowed.join(", ")}.`,
+      );
+    }
+  }
+  return null;
+}
+
 const SYMBOL_RE = /^[A-Za-z0-9&._-]{1,20}$/;
 const EXPIRY_RE = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/;
 
@@ -97,6 +118,9 @@ function validateSymbol(raw: string) {
 export function parseOptionChainQuery(
   searchParams: URLSearchParams,
 ): QueryValidation<OptionChainQuery> {
+  const unknown = rejectUnknownKeys(searchParams, OPTION_CHAIN_KEYS);
+  if (unknown) return unknown;
+
   const symbol = validateSymbol(searchParams.get("symbol") ?? "");
   if (!symbol.ok) return symbol;
 
@@ -138,6 +162,9 @@ export function parseOptionChainQuery(
 export function parseSymbolQuery(
   searchParams: URLSearchParams,
 ): QueryValidation<{ symbol: string }> {
+  const unknown = rejectUnknownKeys(searchParams, SYMBOL_QUERY_KEYS);
+  if (unknown) return unknown;
+
   const symbol = validateSymbol(searchParams.get("symbol") ?? "");
   if (!symbol.ok) return symbol;
   return { ok: true, value: { symbol: symbol.value } };
@@ -147,6 +174,9 @@ export function parseSymbolQuery(
 export function parseHistoryQuery(
   searchParams: URLSearchParams,
 ): QueryValidation<HistoryQuery> {
+  const unknown = rejectUnknownKeys(searchParams, HISTORY_KEYS);
+  if (unknown) return unknown;
+
   const symbol = validateSymbol(searchParams.get("symbol") ?? "");
   if (!symbol.ok) return symbol;
 

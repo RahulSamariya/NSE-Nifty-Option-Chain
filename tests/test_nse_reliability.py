@@ -194,6 +194,26 @@ class MarketCalendarTests(unittest.TestCase):
         # A holiday on another date changes nothing.
         self.assertTrue(nse_core.market_open(friday, holidays={"2026-11-09"}))
 
+    def test_special_trading_session_muhurat_trading_allows_open_market(self):
+        during_session = dt.datetime(2026, 11, 8, 18, 30, tzinfo=IST)
+        before_session = dt.datetime(2026, 11, 8, 17, 59, tzinfo=IST)
+        after_session = dt.datetime(2026, 11, 8, 19, 16, tzinfo=IST)
+        noon_same_day = dt.datetime(2026, 11, 8, 12, 0, tzinfo=IST)
+
+        self.assertTrue(nse_core.market_open(during_session))
+        self.assertFalse(nse_core.market_open(before_session))
+        self.assertFalse(nse_core.market_open(after_session))
+        self.assertFalse(nse_core.market_open(noon_same_day))
+
+    def test_verified_2026_holidays_from_file_close_the_market(self):
+        holidays = nse_core.load_holidays(ROOT / "nse_holidays.txt")
+        self.assertIn(dt.date(2026, 1, 26), holidays)
+        self.assertIn(dt.date(2026, 10, 2), holidays)
+        self.assertIn(dt.date(2026, 12, 25), holidays)
+
+        republic_day = dt.datetime(2026, 1, 26, 11, 0, tzinfo=IST)
+        self.assertFalse(nse_core.market_open(republic_day, holidays=holidays))
+
     def test_load_holidays_reads_comments_and_blank_lines(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "nse_holidays.txt"

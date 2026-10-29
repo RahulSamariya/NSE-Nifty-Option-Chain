@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -24,6 +24,7 @@ import {
   type StrikeRange,
 } from "@/lib/chain-selection";
 import type { ExpiryOption } from "@/lib/api-types";
+import { buildSetupZipBlob } from "@/lib/excel-setup-package";
 
 interface ExcelPanelProps {
   symbols: string[];
@@ -67,6 +68,7 @@ const STATUS_TONE: Record<UiStatus, string> = {
   Unavailable: "bg-zinc-800 border-zinc-700 text-zinc-400",
   Loading: "bg-zinc-800 border-zinc-700 text-zinc-400",
   Error: "bg-rose-500/10 border-rose-500/30 text-rose-300",
+  Imported: "bg-sky-500/10 border-sky-500/30 text-sky-300",
 };
 
 function timeLabel(value: Date | null): string {
@@ -102,6 +104,47 @@ export function ExcelPanel(props: ExcelPanelProps) {
     onDownload,
     onClose,
   } = props;
+
+  const [isGeneratingSetup, setIsGeneratingSetup] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
+
+  const handleDownloadSetup = async () => {
+    setIsGeneratingSetup(true);
+    setSetupError(null);
+    try {
+      const origin =
+        process.env.NEXT_PUBLIC_APP_URL ||
+        (typeof window !== "undefined"
+          ? window.location.origin
+          : "http://localhost:3000");
+      const blob = await buildSetupZipBlob({
+        baseUrl: origin,
+        symbol,
+        expiry: selectedExpiry,
+        strikeRange,
+        fields: fieldGroups.length === 7 ? "all" : fieldGroups.join(","),
+        refreshMinutes,
+        autoRefresh,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `NSE_Option_Chain_Excel_Setup_${symbol}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Setup package generation failed:", err);
+      setSetupError(
+        err instanceof Error
+          ? err.message
+          : "Failed to generate Excel setup package.",
+      );
+    } finally {
+      setIsGeneratingSetup(false);
+    }
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -351,31 +394,88 @@ export function ExcelPanel(props: ExcelPanelProps) {
             </p>
           </div>
 
-          {/* Actions */}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={isLoading}
-              className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-              {isLoading ? "Refreshing…" : "Refresh Now"}
-            </button>
+          {/* One-Click Automated Desktop Excel Setup */}
+          <div className="rounded-xl border border-emerald-500/40 bg-gradient-to-b from-emerald-950/30 to-zinc-900/60 p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                    One-Click Live Excel Setup
+                  </h3>
+                  <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300 border border-emerald-500/30">
+                    Recommended
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-zinc-300 leading-relaxed">
+                  Configures Microsoft Excel Desktop on Windows to connect directly to this hosted API.
+                  Includes native Power Query feeds, auto-refresh ({autoRefresh ? `${refreshMinutes} min` : "manual"}), and an in-sheet Settings control panel.
+                </p>
+                <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-400">
+                  <span>Symbol: <strong className="text-zinc-200">{symbol}</strong></span>
+                  <span>Expiry: <strong className="text-zinc-200">{selectedExpiry || "latest"}</strong></span>
+                  <span>Range: <strong className="text-zinc-200">{strikeRange}</strong></span>
+                  <span>Refresh: <strong className="text-zinc-200">{autoRefresh ? `${refreshMinutes} min` : "Manual"}</strong></span>
+                  <span>API: <strong className="text-zinc-200 truncate max-w-xs inline-block align-bottom">{typeof window !== "undefined" ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin) : "Hosted API"}</strong></span>
+                </div>
+              </div>
+            </div>
 
-            <button
-              type="button"
-              onClick={onDownload}
-              disabled={isExporting || strikeCount === 0}
-              className="flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-zinc-950 transition-colors hover:bg-emerald-400 disabled:opacity-50"
-            >
-              {isExporting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Download className="h-3.5 w-3.5" />
-              )}
-              {isExporting ? "Building workbook…" : "Download Excel"}
-            </button>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleDownloadSetup}
+                disabled={isGeneratingSetup}
+                className="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-bold text-zinc-950 shadow-md transition-all hover:bg-emerald-400 active:scale-95 disabled:opacity-50"
+              >
+                {isGeneratingSetup ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                {isGeneratingSetup ? "Generating Setup Package…" : "Set Up Excel (1-Click Package)"}
+              </button>
+            </div>
+
+            {setupError && (
+              <p role="alert" className="mt-2 flex items-start gap-2 rounded-lg border border-rose-900/70 bg-rose-950/30 px-3 py-2 text-[11px] text-rose-200">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {setupError}
+              </p>
+            )}
+
+            <p className="mt-2.5 text-[10px] leading-relaxed text-zinc-400">
+              Downloads a ready-to-run package with <code className="text-emerald-300">Setup-NSE-Excel.bat</code> that automatically provisions a reusable 4-sheet workbook (Summary, Option Chain, Raw Data, Settings) in your Documents folder. No Python or manual M-code required.
+            </p>
+          </div>
+
+          {/* Quick Snapshot & Refresh Actions */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800/80 pt-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={isLoading}
+                className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+                {isLoading ? "Refreshing…" : "Refresh Now"}
+              </button>
+
+              <button
+                type="button"
+                onClick={onDownload}
+                disabled={isExporting || strikeCount === 0}
+                className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-200 transition-colors hover:bg-zinc-700 disabled:opacity-50"
+              >
+                {isExporting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                {isExporting ? "Building workbook…" : "Download Snapshot .xlsx"}
+              </button>
+            </div>
 
             <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
               <Clock className="h-3 w-3" />
@@ -393,11 +493,7 @@ export function ExcelPanel(props: ExcelPanelProps) {
 
         <div className="border-t border-zinc-800 px-5 py-3">
           <p className="text-[11px] leading-relaxed text-zinc-500">
-            Downloads a real <span className="font-mono">.xlsx</span> from the hosted server. The
-            file is a snapshot and does not update itself; for an in-place refresh connect Excel
-            Power Query to the CSV endpoint — see{" "}
-            <span className="font-mono">docs/EXCEL_POWER_QUERY.md</span>. The old local helper is
-            optional and no longer required.
+            For live desktop workflows, use <strong className="text-zinc-300">Set Up Excel (1-Click Package)</strong> above to configure automated Power Query feeds in Microsoft Excel. For one-off static analysis, use <strong className="text-zinc-300">Download Snapshot .xlsx</strong>.
           </p>
         </div>
       </div>

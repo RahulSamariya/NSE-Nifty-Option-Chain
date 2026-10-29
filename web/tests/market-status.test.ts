@@ -32,6 +32,28 @@ describe("isIndianMarketOpen", () => {
     expect(isIndianMarketOpen(new Date("2026-10-26T10:01:00Z"))).toBe(false); // Mon 15:31 IST
     expect(isIndianMarketOpen(sundayNoonIst)).toBe(false);
   });
+
+  it("is closed on verified 2026 exchange holidays", () => {
+    // 2026-01-26 Republic Day (Monday at 11:00 IST)
+    expect(isIndianMarketOpen(new Date("2026-01-26T05:30:00Z"))).toBe(false);
+    // 2026-10-02 Mahatma Gandhi Jayanti (Friday at 11:00 IST)
+    expect(isIndianMarketOpen(new Date("2026-10-02T05:30:00Z"))).toBe(false);
+    // 2026-12-25 Christmas (Friday at 11:00 IST)
+    expect(isIndianMarketOpen(new Date("2026-12-25T05:30:00Z"))).toBe(false);
+  });
+
+  it("handles special trading sessions like Diwali Muhurat trading", () => {
+    // 2026-11-08 Sunday Diwali Muhurat Trading (18:00 - 19:15 IST = 12:30 - 13:45 UTC)
+    const duringMuhurat = new Date("2026-11-08T13:00:00Z"); // 18:30 IST
+    const beforeMuhurat = new Date("2026-11-08T12:20:00Z"); // 17:50 IST
+    const afterMuhurat = new Date("2026-11-08T14:00:00Z"); // 19:30 IST
+    const sundayMorning = new Date("2026-11-08T05:30:00Z"); // 11:00 IST
+
+    expect(isIndianMarketOpen(duringMuhurat)).toBe(true);
+    expect(isIndianMarketOpen(beforeMuhurat)).toBe(false);
+    expect(isIndianMarketOpen(afterMuhurat)).toBe(false);
+    expect(isIndianMarketOpen(sundayMorning)).toBe(false);
+  });
 });
 
 describe("getSnapshotFreshness", () => {

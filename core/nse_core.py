@@ -162,17 +162,30 @@ def _holiday_date(value):
     return dt.date.fromisoformat(str(value).strip())
 
 
-def market_open(now=None, holidays=None):
+SPECIAL_SESSIONS_2026 = {
+    dt.date(2026, 11, 8): (dt.time(18, 0), dt.time(19, 15)),  # Diwali Muhurat Trading
+}
+
+
+def market_open(now=None, holidays=None, special_sessions=None):
     """Mon-Fri 09:15-15:35 IST, excluding dates in ``holidays``.
 
     ``holidays`` accepts dates or ISO date strings; an empty/None calendar means
     "weekdays only", which is all this repository knows without a published NSE
     calendar. Pass ``load_holidays()`` to respect real exchange holidays.
+    Special trading sessions (e.g. Diwali Muhurat trading) take precedence when
+    provided or defined in ``SPECIAL_SESSIONS_2026``.
     """
     now = now or ist_now()
+    sessions = SPECIAL_SESSIONS_2026 if special_sessions is None else special_sessions
+    current_date = now.date()
+    if sessions and current_date in sessions:
+        start_t, end_t = sessions[current_date]
+        return start_t <= now.time() <= end_t
+
     if now.weekday() >= 5:
         return False
-    if holidays and now.date() in {_holiday_date(day) for day in holidays}:
+    if holidays and current_date in {_holiday_date(day) for day in holidays}:
         return False
     return dt.time(9, 15) <= now.time() <= dt.time(15, 35)
 

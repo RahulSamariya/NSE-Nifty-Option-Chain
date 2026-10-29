@@ -6,6 +6,7 @@ import { MetricsBar } from "@/components/MetricsBar";
 import { OptionChainTable } from "@/components/OptionChainTable";
 import { ChartsView } from "@/components/ChartsView";
 import { ExcelPanel } from "@/components/ExcelPanel";
+import { ImportCsvPanel } from "@/components/ImportCsvPanel";
 import {
   OptionChainHistoryPoint,
   OptionChainRecord,
@@ -28,6 +29,8 @@ import {
   type StrikeRange,
 } from "@/lib/chain-selection";
 import { normalizeOptionChainRecord } from "@/lib/option-chain-record";
+import type { CsvImportMeta } from "@/lib/nse-csv-import";
+import { buildOptionChainWorkbook } from "@/lib/excel-export";
 import { RefreshGuard, shouldRefreshOnReturn } from "@/lib/refresh-guard";
 import { AlertCircle, BarChart3, Download, RefreshCw, Table, SlidersHorizontal } from "lucide-react";
 
@@ -66,10 +69,23 @@ export default function Home() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  /**
+   * A snapshot the user imported from an NSE CSV, parsed in this browser.
+   * While it is set it becomes the selected data source and the hosted API is
+   * not polled, so the dashboard never mixes an imported chain with stored
+   * rows. Cleared to fall back to the hosted snapshots.
+   */
+  const [imported, setImported] = useState<{
+    record: OptionChainRecord;
+    meta: CsvImportMeta;
+  } | null>(null);
+
   // Created once; survives renders and owns the AbortController.
   const [guard] = useState(() => new RefreshGuard());
 
   const fetchData = useCallback(async () => {
+    // An imported CSV is the selected source; do not mix in stored rows.
+    if (imported) return;
     const requestKey = `${selectedSymbol}|${selectedExpiry ?? "newest"}`;
     // One read at a time per symbol+expiry: polling, Refresh Now and the panel
     // all share this guard, so a slow query can never overlap another one.
@@ -160,16 +176,16 @@ export default function Home() {
       guard.finish(ticket.key);
       if (!signal.aborted) setIsLoading(false);
     }
-  }, [selectedSymbol, selectedExpiry, guard]);
+  }, [selectedSymbol, selectedExpiry, guard, imported]);
 
   // Chain + history whenever the symbol or expiry changes.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || imported) return;
     const timer = window.setTimeout(() => {
       void fetchData();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [fetchData]);
+  }, [fetchData, imported]);
 
   // Available expiries are read from the database, never invented.
   useEffect(() => {
@@ -203,17 +219,18 @@ export default function Home() {
   }, [selectedSymbol]);
 
   // Timed polling. Pauses in a hidden tab, catches up on return, and restarts
-  // cleanly when the interval or the toggle changes.
+  // cleanly when the interval or the toggle changes. Never polls while an
+  // imported CSV is the selected source.
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || imported) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === "visible") void fetchData();
     }, refreshMinutes * 60_000);
     return () => window.clearInterval(id);
-  }, [autoRefresh, refreshMinutes, fetchData]);
+  }, [autoRefresh, refreshMinutes, fetchData, imported]);
 
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || imported) return;
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       const due = shouldRefreshOnReturn(
@@ -225,20 +242,31 @@ export default function Home() {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [autoRefresh, refreshMinutes, lastRefreshAt, fetchData]);
+  }, [autoRefresh, refreshMinutes, lastRefreshAt, fetchData, imported]);
 
   useEffect(() => {
     return () => guard.abort();
   }, [guard]);
 
-  const visibleData = data?.symbol === selectedSymbol ? data : null;
-  const status: UiStatus = error
-    ? "Error"
-    : isLoading && !visibleData
-      ? "Loading"
-      : meta
-        ? meta.status
-        : "Unavailable";
+  // An imported snapshot wins over whatever the API last returned, but only
+  // when it matches the symbol currently selected in the header.
+  const visibleData = imported
+    ? imported.record.symbol === selectedSymbol
+      ? imported.record
+      : null
+    : data?.symbol === selectedSymbol
+      ? data
+      : null;
+
+  const status: UiStatus = imported
+    ? "Imported" // a file the user handed us; never claim Live
+    : error
+      ? "Error"
+      : isLoading && !visibleData
+        ? "Loading"
+        : meta
+          ? meta.status
+          : "Unavailable";
 
   const strikeRadiusValue = strikeRadius(strikeRange);
   const strikesShown = useMemo(() => {
@@ -266,7 +294,83 @@ export default function Home() {
     setHistoryError(null);
   }, []);
 
+  /**
+   * Promote a validated imported snapshot to the selected data source. The
+   * header symbol switches to match so the chain is immediately visible, and
+   * API polling stays paused for as long as the import is set.
+   */
+  const handleImport = useCallback((record: OptionChainRecord, meta: CsvImportMeta) => {
+    setImported({ record, meta });
+    setSelectedSymbol(record.symbol);
+    setSelectedExpiry(record.expiry);
+    setData(null);
+    setMeta(null);
+    setHistory([]);
+    setError(null);
+    setHistoryError(null);
+  }, []);
+
+  const handleClearImport = useCallback(() => {
+    setImported(null);
+    setData(null);
+    setMeta(null);
+    setHistory([]);
+    setError(null);
+    setHistoryError(null);
+  }, []);
+
+  /**
+   * Excel for an imported snapshot is generated entirely in the browser from
+   * the parsed rows, so no server or database is involved. The hosted path
+   * keeps using the API export route above.
+   */
+  const downloadImportedExcel = useCallback(async () => {
+    if (!imported || imported.record.symbol !== selectedSymbol || isExporting) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const buffer = await buildOptionChainWorkbook({
+        record: imported.record,
+        status: "Unavailable",
+        ageSeconds: null,
+        csvUrl: "",
+        // The full dataset, not just the strikes the table is windowed to.
+        chainRows: imported.record.raw_data,
+        rangeLabel: "All strikes",
+        fieldsLabel: "All fields",
+        importInfo: {
+          fileName: imported.meta.fileName,
+          fileSize: imported.meta.fileSize,
+          importedAt: imported.meta.importedAt,
+          exchangeTimestamp: imported.meta.exchangeTimestamp,
+        },
+      });
+
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${imported.record.symbol}_${imported.record.expiry}_imported.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (failure) {
+      setExportError(
+        failure instanceof Error ? failure.message : "Could not build the Excel workbook.",
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  }, [imported, selectedSymbol, isExporting]);
+
   const downloadExcel = useCallback(async () => {
+    if (imported) {
+      await downloadImportedExcel();
+      return;
+    }
     if (!visibleData || !meta || isExporting) return;
     setIsExporting(true);
     setExportError(null);
@@ -305,7 +409,7 @@ export default function Home() {
     } finally {
       setIsExporting(false);
     }
-  }, [visibleData, meta, isExporting, strikeRange, fieldGroups]);
+  }, [visibleData, meta, isExporting, strikeRange, fieldGroups, imported, downloadImportedExcel]);
 
   const checkedAtLabel = lastRefreshAt
     ? lastRefreshAt.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false })
@@ -318,14 +422,63 @@ export default function Home() {
         onSelectSymbol={handleSelectSymbol}
         symbols={SYMBOLS}
         expiry={visibleData?.expiry || ""}
-        nseTimestamp={visibleData?.nse_timestamp ?? null}
+        nseTimestamp={
+          imported ? imported.meta.exchangeTimestamp : (visibleData?.nse_timestamp ?? null)
+        }
         status={status}
         onRefresh={fetchData}
         onOpenExcel={() => setExcelOpen(true)}
-        isLoading={isLoading}
+        isLoading={isLoading && !imported}
       />
 
       <main className="max-w-7xl mx-auto px-4 py-4">
+        <ImportCsvPanel
+          onImport={handleImport}
+          hasImport={imported !== null}
+          onClear={handleClearImport}
+          busy={isExporting}
+        />
+
+        {imported && (
+          <div
+            role="status"
+            className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border border-sky-500/30 bg-sky-500/10 px-4 py-2.5 text-xs text-sky-200"
+          >
+            <span className="font-bold uppercase tracking-wider text-sky-300">
+              Imported Snapshot
+            </span>
+            <span>
+              <span className="text-sky-300/70">Symbol</span>{" "}
+              <strong>{imported.record.symbol}</strong>
+            </span>
+            <span>
+              <span className="text-sky-300/70">Expiry</span> <strong>{imported.record.expiry}</strong>
+            </span>
+            <span className="max-w-[14rem] truncate">
+              <span className="text-sky-300/70">File</span>{" "}
+              <strong title={imported.meta.fileName}>{imported.meta.fileName}</strong>
+            </span>
+            <span>
+              <span className="text-sky-300/70">Imported</span>{" "}
+              <strong>
+                {new Date(imported.meta.importedAt).toLocaleTimeString("en-GB", {
+                  timeZone: "Asia/Kolkata",
+                  hour12: false,
+                })}{" "}
+                IST
+              </strong>
+            </span>
+            <span>
+              <span className="text-sky-300/70">Exchange timestamp</span>{" "}
+              <strong>{imported.meta.exchangeTimestamp ?? "not in file"}</strong>
+            </span>
+            <span className="text-sky-300/80">
+              This is a static file you imported. It is not live data and will not update on its
+              own.
+            </span>
+          </div>
+        )}
+
         {visibleData && (
           <MetricsBar
             symbol={visibleData.symbol}
@@ -353,7 +506,7 @@ export default function Home() {
           </div>
         )}
 
-        {historyError && (
+        {historyError && !imported && (
           <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
             Intraday history is unavailable: {historyError}
           </div>
@@ -361,19 +514,23 @@ export default function Home() {
 
         {!isLoading && !error && !visibleData && (
           <div className="my-6 border border-zinc-800 bg-zinc-900/40 p-6 text-sm text-zinc-300">
-            No valid NSE snapshot is available for {selectedSymbol}
-            {selectedExpiry ? ` · ${selectedExpiry}` : ""}.
+            {imported
+              ? `The imported file covers ${imported.record.symbol}, so no chain is shown for ` +
+                `${selectedSymbol}. Select ${imported.record.symbol} to view the imported snapshot, ` +
+                "or clear the import to return to the hosted snapshots."
+              : `No valid NSE snapshot is available for ${selectedSymbol}` +
+                `${selectedExpiry ? ` · ${selectedExpiry}` : ""}.`}
           </div>
         )}
 
-        {visibleData && status === "Stale" && (
+        {visibleData && !imported && status === "Stale" && (
           <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
             This snapshot is stale. Source timestamp: {visibleData.nse_timestamp || "unavailable"}.
             Refreshing re-reads the stored snapshot; only the NSE collector can make it newer.
           </div>
         )}
 
-        {visibleData && status === "Unavailable" && (
+        {visibleData && !imported && status === "Unavailable" && (
           <div role="status" className="my-3 border border-amber-900/70 bg-amber-950/20 p-3 text-xs text-amber-200">
             The source timestamp is missing or invalid; freshness cannot be confirmed.
           </div>
@@ -434,8 +591,12 @@ export default function Home() {
             <button
               type="button"
               onClick={() => void fetchData()}
-              disabled={isLoading}
-              title="Re-read the newest stored snapshot from the hosted API. This does not contact NSE."
+              disabled={isLoading || imported !== null}
+              title={
+                imported
+                  ? "An imported CSV is being shown. Clear the import to read the hosted API again."
+                  : "Re-read the newest stored snapshot from the hosted API. This does not contact NSE."
+              }
               className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-zinc-200 transition-colors hover:border-zinc-700 hover:text-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
@@ -446,7 +607,11 @@ export default function Home() {
               type="button"
               onClick={() => void downloadExcel()}
               disabled={!visibleData || isExporting}
-              title="Download the selected symbol, expiry, strike range and import fields as a three-sheet .xlsx workbook."
+              title={
+                imported
+                  ? "Build a three-sheet .xlsx in this browser from the imported snapshot."
+                  : "Download the selected symbol, expiry, strike range and import fields as a three-sheet .xlsx workbook."
+              }
               className="flex items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className={`w-3.5 h-3.5 ${isExporting ? "animate-pulse" : ""}`} />
@@ -456,9 +621,11 @@ export default function Home() {
         </div>
 
         <p className="-mt-1 mb-4 text-[11px] text-zinc-500">
-          {checkedAtLabel
-            ? `Last refresh ${checkedAtLabel} IST · ${autoRefresh ? `auto every ${refreshMinutes} min (paused when this tab is hidden)` : "auto-refresh off"} · reads the hosted API, not NSE.`
-            : "Waiting for the first snapshot…"}
+          {imported
+            ? "Showing the imported CSV. This is a static snapshot in your browser; it never becomes live and no data leaves this page."
+            : checkedAtLabel
+              ? `Last refresh ${checkedAtLabel} IST · ${autoRefresh ? `auto every ${refreshMinutes} min (paused when this tab is hidden)` : "auto-refresh off"} · reads the hosted API, not NSE.`
+              : "Waiting for the first snapshot…"}
         </p>
 
         {exportError && (

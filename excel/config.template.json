@@ -1,0 +1,10 @@
+{
+  "baseUrl": "",
+  "symbol": "NIFTY",
+  "expiry": "latest",
+  "strikeRange": "all",
+  "fields": "all",
+  "refreshMinutes": 5,
+  "autoRefresh": true,
+  "targetPath": ""
+}

@@ -1,6 +1,9 @@
 import { enforceRateLimit, jsonError, preflight } from "@/lib/api-response";
 import { createReadClient } from "@/lib/option-chain-server";
-import { getSnapshotFreshness, isIndianMarketOpen } from "@/lib/market-status";
+import {
+  getMarketSessionInfo,
+  getSnapshotFreshness,
+} from "@/lib/market-status";
 
 export function OPTIONS(): Response {
   return preflight();
@@ -14,8 +17,15 @@ interface LiveRow {
   updated_at: string | null;
 }
 
-function writeAgeState(seconds: number | null): "never" | "running" | "delayed" | "stalled" {
+function writeAgeState(
+  seconds: number | null,
+  marketOpen: boolean,
+): "never" | "running" | "delayed" | "stalled" | "idle_off_hours" {
   if (seconds === null) return "never";
+  if (!marketOpen) {
+    if (seconds <= 600) return "running";
+    return "idle_off_hours";
+  }
   if (seconds <= 600) return "running";
   if (seconds <= 3600) return "delayed";
   return "stalled";
@@ -41,7 +51,16 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  const now = new Date();
+  const testNowHeader =
+    process.env.NODE_ENV !== "production"
+      ? request.headers.get("x-test-now") ||
+        new URL(request.url).searchParams.get("test_now")
+      : null;
+  const now =
+    testNowHeader && !Number.isNaN(Date.parse(testNowHeader))
+      ? new Date(testNowHeader)
+      : new Date();
+
   let rows: LiveRow[];
   try {
     const { data, error } = await client
@@ -93,26 +112,70 @@ export async function GET(request: Request): Promise<Response> {
       .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
       .sort()
       .at(-1) ?? null;
-  const marketOpen = isIndianMarketOpen(now);
+
+  const sessionInfo = getMarketSessionInfo(now);
+  const marketOpen = sessionInfo.isOpen;
 
   const healthy = symbols.some(
     (entry) => entry.status === "Live" || entry.status === "Last Close",
   );
-  const workerState = writeAgeState(freshestWrite);
+  const workerState = writeAgeState(freshestWrite, marketOpen);
+
+  const sourceTimestamps = rows
+    .map((row) => row.nse_timestamp)
+    .filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+  const latestNseTimestamp = sourceTimestamps.at(0) ?? null;
+
+  const sourceAges = symbols
+    .map((entry) => entry.source_age_seconds)
+    .filter((value): value is number => value !== null);
+  const freshestSourceAge = sourceAges.length > 0 ? Math.min(...sourceAges) : null;
+  const primarySymbol = symbols.at(0) ?? null;
 
   return Response.json(
     {
       status: symbols.length === 0 ? "unavailable" : healthy ? "ok" : "degraded",
       generated_at: now.toISOString(),
       market_open: marketOpen,
+      market_session: {
+        is_open: marketOpen,
+        reason: sessionInfo.reason,
+      },
       database: { reachable: true, rows: symbols.length },
       worker: {
         state: workerState,
         last_write_at: lastWriteAt,
         seconds_since_write: freshestWrite,
+        heartbeat: {
+          status:
+            workerState === "running"
+              ? "active"
+              : workerState === "idle_off_hours"
+              ? "idle_off_hours"
+              : workerState,
+          last_seen_at: lastWriteAt,
+          seconds_ago: freshestWrite,
+        },
+        database_write: {
+          last_write_at: lastWriteAt,
+          seconds_since_write: freshestWrite,
+          write_state:
+            freshestWrite === null
+              ? "never"
+              : freshestWrite <= 600
+              ? "recent"
+              : freshestWrite <= 3600
+              ? "delayed"
+              : "stalled",
+        },
+        nse_source: {
+          latest_timestamp: latestNseTimestamp,
+          source_age_seconds: freshestSourceAge,
+          freshness_status: primarySymbol?.status ?? null,
+        },
         note: marketOpen
           ? "Market is open: a healthy collector writes every few minutes."
-          : "Market is closed: a sleeping collector is expected; freshness is judged from the NSE close timestamp.",
+          : `Market is closed (${sessionInfo.reason}): a sleeping collector is expected; freshness is judged from the NSE close timestamp.`,
       },
       symbols,
     },
