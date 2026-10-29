@@ -6,7 +6,7 @@ only component that talks to NSE; browsers only read the stored snapshot.
 
 Usage (run from the repository root):
   python worker/bridge_worker.py
-  python worker/bridge_worker.py --symbol NIFTY BANKNIFTY --interval 30 --always
+  python worker/bridge_worker.py --symbol NIFTY BANKNIFTY FINNIFTY --interval 30
   python worker/bridge_worker.py --once          # one cycle, then exit
 
 ``--once`` is what a hosted scheduler (systemd timer, Windows Task Scheduler,
@@ -41,6 +41,101 @@ ES_SYSTEM_REQUIRED = 0x00000001
 MAX_SOURCE_AGE_SECONDS = 300
 HISTORY_INTERVAL_SECONDS = 300
 HOLIDAY_FILE = ROOT / "nse_holidays.txt"
+PID_FILE = ROOT / ".collector.pid"
+STOP_FILE = ROOT / ".collector.stop"
+LOG_DIR = ROOT / "logs"
+LOG_FILE = LOG_DIR / "collector.log"
+
+
+def log_message(msg: str):
+    """Print to console and append to logs/collector.log with IST timestamp."""
+    try:
+        now_str = f"[{nc.ist_now():%Y-%m-%d %H:%M:%S IST}]"
+    except Exception:
+        now_str = f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}]"
+    line = f"{now_str} {msg}"
+    print(line)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def mask_url(url: str | None) -> str:
+    """Display URL safely without exposing path secrets."""
+    if not url:
+        return "not set"
+    if "your-project" in url:
+        return f"placeholder ('{url}')"
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        host = p.netloc
+        masked = host[:4] + "***" + host[-8:] if len(host) > 12 else host[:4] + "***"
+        return f"{p.scheme}://{masked}"
+    except Exception:
+        return url[:8] + "***"
+
+
+def mask_key(key: str | None) -> str:
+    """Display key metadata safely without revealing secret content."""
+    if not key:
+        return "not set"
+    if "your-service-role-key" in key:
+        return f"placeholder ('{key}')"
+    prefix = key[:6] if len(key) >= 6 else key[:2]
+    return f"configured (length {len(key)}, prefix '{prefix}***')"
+
+
+def check_configuration():
+    """Verify presence of required environment variables without leaking secrets."""
+    url, key = load_env_credentials()
+    env_file = ROOT / ".env"
+    issues = []
+    if not env_file.exists() and not (os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY")):
+        issues.append(f"No .env file found at {env_file}")
+    if not url:
+        issues.append("SUPABASE_URL is missing. Set it in .env (e.g. https://<project>.supabase.co).")
+    elif "your-project" in url:
+        issues.append("SUPABASE_URL still contains default placeholder 'your-project.supabase.co'.")
+    if not key:
+        issues.append("SUPABASE_KEY is missing. Set backend service-role key in .env.")
+    elif "your-service-role-key" in key:
+        issues.append("SUPABASE_KEY still contains default placeholder 'your-service-role-key'.")
+    return url, key, issues
+
+
+def interruptible_sleep(seconds: float) -> bool:
+    """Sleep in 1s increments, returning True early if STOP_FILE is detected."""
+    end_time = time.time() + max(0.0, seconds)
+    while time.time() < end_time:
+        if STOP_FILE.exists():
+            return True
+        time.sleep(min(1.0, max(0.1, end_time - time.time())))
+    return False
+
+
+def is_process_running(pid: int) -> bool:
+    """Check if process with given PID exists (Windows/POSIX compatible)."""
+    if sys.platform == "win32":
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                f'tasklist /FI "PID eq {pid}" /NH',
+                shell=True,
+                stderr=subprocess.DEVNULL,
+            ).decode(errors="ignore")
+            return str(pid) in out
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
 
 def prevent_sleep():
@@ -177,8 +272,8 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
 
             upsert_live_snapshot(sb, payload, now=now)
             live_writes += 1
-            print(
-                f"[{now:%H:%M:%S}] {sym:<10} | NSE source: {nse_ts} | "
+            log_message(
+                f"{sym:<10} | NSE source: {nse_ts} | spot: {spot:.2f} | "
                 "live snapshot upserted successfully"
             )
 
@@ -199,8 +294,8 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
                 )
                 last_history_time[sym] = time.time()
                 history_writes += 1
-                print(
-                    f"[{now:%H:%M:%S}] {sym:<10} | NSE source: {nse_ts} | "
+                log_message(
+                    f"{sym:<10} | NSE source: {nse_ts} | "
                     "history record inserted successfully"
                 )
 
@@ -208,7 +303,7 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
         except Exception as exc:  # noqa: BLE001 - one symbol must not stop the rest
             failed.append(sym)
             errors.append(f"{sym}: {exc}")
-            print(f"[{now:%H:%M:%S}] {sym} | NSE source: {nse_ts} | FAILED: {exc}")
+            log_message(f"{sym:<10} | NSE source: {nse_ts} | FAILED: {exc}")
             # Re-warm the session after a network error.
             try:
                 nse_client = nc.NSE()
@@ -227,8 +322,8 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="NSE to Supabase Bridge Worker")
-    parser.add_argument("--symbol", nargs="+", default=["NIFTY", "BANKNIFTY"],
-                        help="Symbols to monitor (default: NIFTY BANKNIFTY)")
+    parser.add_argument("--symbol", nargs="+", default=["NIFTY", "BANKNIFTY", "FINNIFTY"],
+                        help="Symbols to monitor (default: NIFTY BANKNIFTY FINNIFTY)")
     parser.add_argument("--interval", type=int, default=30,
                         help="Polling interval in seconds (default: 30)")
     parser.add_argument("--always", action="store_true",
@@ -270,11 +365,11 @@ def main(argv=None):
         if holidays
         else f"no holidays in {Path(args.holidays).name} (weekdays only)"
     )
-    print("[*] Connected to Supabase")
-    print(f"[*] Monitoring symbols: {symbols}")
-    print(f"[*] Market calendar: Mon-Fri 09:15-15:35 IST; {calendar_note}")
 
     if args.once:
+        print("[*] Connected to Supabase")
+        print(f"[*] Monitoring symbols: {symbols}")
+        print(f"[*] Market calendar: Mon-Fri 09:15-15:35 IST; {calendar_note}")
         now = nc.ist_now()
         if not (args.always or nc.market_open(now, holidays=holidays)):
             print(
@@ -296,31 +391,107 @@ def main(argv=None):
         )
         return 0 if not result["failed"] else 1
 
-    print(f"[*] Press Ctrl+C to terminate.\n")
+    # Continuous running mode
+    # 1. Manage PID file for safe stop
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            if is_process_running(old_pid) and old_pid != os.getpid():
+                log_message(f"[WARNING] Another collector instance may be running (PID: {old_pid}).")
+                log_message("          Run Stop-Live-Collector.bat first or remove .collector.pid if stale.")
+        except Exception:
+            pass
+    try:
+        PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
+    if STOP_FILE.exists():
+        try:
+            STOP_FILE.unlink()
+        except Exception:
+            pass
+
+    log_message("================================================================")
+    log_message("  NSE Option Chain - Live Market Data Collector Started")
+    log_message("================================================================")
+    log_message(f"Process PID:      {os.getpid()}")
+    log_message(f"Supabase Target:  {mask_url(supabase_url)}")
+    log_message(f"Supabase Key:     {mask_key(supabase_key)}")
+    log_message(f"Symbols:          {', '.join(symbols)}")
+    log_message(f"Polling Interval: {args.interval}s")
+    log_message(f"Market Calendar:  Mon-Fri 09:15-15:35 IST; {calendar_note}")
+
+    # Pre-flight query to check database status
+    try:
+        live_res = sb.table("option_chain_live").select("symbol,expiry,spot,nse_timestamp,updated_at").order("updated_at", desc=True).limit(3).execute()
+        if live_res.data:
+            log_message(f"Current database state ({len(live_res.data)} snapshot(s) found):")
+            for r in live_res.data:
+                log_message(f"  - {r.get('symbol')} {r.get('expiry')}: Spot={r.get('spot')}, NSE TS={r.get('nse_timestamp')}, DB Written={r.get('updated_at')}")
+        else:
+            log_message("Database state: option_chain_live is empty.")
+    except Exception as db_err:
+        log_message(f"[WARNING] Could not read database status check: {db_err}")
+
+    log_message("[*] Press Ctrl+C in this terminal or run Stop-Live-Collector.bat to stop.")
 
     prevent_sleep()
-    nse_client = nc.NSE()
+    try:
+        nse_client = nc.NSE()
+    except Exception as exc:
+        log_message(f"[!] Session warm-up warning: {exc}")
+        nse_client = None
+
     last_history_time = {}
 
     try:
         while True:
+            if STOP_FILE.exists():
+                log_message("[*] Stop signal detected (.collector.stop). Exiting gracefully...")
+                break
+
             now = nc.ist_now()
             if not (args.always or nc.market_open(now, holidays=holidays)):
-                print(
-                    f"[{now:%H:%M:%S}] Market closed (Mon-Fri 09:15-15:35 IST, "
-                    "exchange holidays excluded). Waiting 60s..."
+                log_message(
+                    "Market is closed (Mon-Fri 09:15-15:35 IST, exchange holidays excluded). "
+                    "Waiting 60s for next market session..."
                 )
-                time.sleep(60)
+                if interruptible_sleep(60):
+                    log_message("[*] Stop signal detected during market-closed wait. Exiting...")
+                    break
                 continue
+
+            if nse_client is None:
+                try:
+                    nse_client = nc.NSE()
+                except Exception as exc:
+                    log_message(f"[!] Could not connect to NSE: {exc}")
+                    if interruptible_sleep(args.interval):
+                        break
+                    continue
 
             result = run_cycle(sb, nse_client, symbols, last_history_time, now=now)
             nse_client = result["client"]
-            time.sleep(args.interval)
+
+            if interruptible_sleep(args.interval):
+                log_message("[*] Stop signal detected. Exiting...")
+                break
 
     except KeyboardInterrupt:
-        print("\n[*] Bridge worker stopped by user.")
+        log_message("[*] Bridge worker stopped by user (Ctrl+C).")
     finally:
         allow_sleep()
+        if PID_FILE.exists():
+            try:
+                PID_FILE.unlink()
+            except Exception:
+                pass
+        if STOP_FILE.exists():
+            try:
+                STOP_FILE.unlink()
+            except Exception:
+                pass
+        log_message("[*] Collector process terminated cleanly.")
     return 0
 
 

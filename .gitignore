@@ -14,3 +14,7 @@ excel/excel_output/
 dist/
 build/
 .env
+
+/logs/
+.collector.pid
+.collector.stop
