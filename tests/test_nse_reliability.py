@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,35 @@ import nse_core
 
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+
+# ---------------------------------------------------------------------------
+# Production log isolation.
+#
+# The unit suite must never write to logs/collector.log: mocked fetches and
+# fake Supabase writes would pollute the historical record. The snapshot below
+# is taken before any test runs and re-checked in tearDownModule(), i.e. after
+# the whole suite, so a leak anywhere fails the run.
+# ---------------------------------------------------------------------------
+PRODUCTION_LOG = bridge_worker.LOG_FILE
+_PRODUCTION_LOG_EXISTED = PRODUCTION_LOG.exists()
+_PRODUCTION_LOG_BYTES = PRODUCTION_LOG.read_bytes() if _PRODUCTION_LOG_EXISTED else None
+
+
+def tearDownModule():
+    if not _PRODUCTION_LOG_EXISTED:
+        if PRODUCTION_LOG.exists():
+            raise AssertionError(
+                f"Unit tests created the production log {PRODUCTION_LOG}; it must stay untouched."
+            )
+        return
+    current = PRODUCTION_LOG.read_bytes()
+    if current != _PRODUCTION_LOG_BYTES:
+        raise AssertionError(
+            f"Unit tests modified the production log {PRODUCTION_LOG} "
+            f"({len(_PRODUCTION_LOG_BYTES)} bytes before, {len(current)} bytes after). "
+            "Tests must redirect logging with configure_log_file()."
+        )
+
 
 
 class FakeTable:
@@ -409,6 +439,364 @@ class WorkerOnceModeTests(unittest.TestCase):
                 ["--once", "--symbol", "NIFTY", "--holidays", str(ROOT / "nse_holidays.txt")]
             )
         self.assertEqual(code, 0)
+
+
+RUN_NOW = dt.datetime(2026, 10, 23, 15, 30, tzinfo=IST)
+
+
+def run_worker_once(*, market_open=True, chain=None,
+                    credentials=("http://stub", "key"),
+                    log_path=None, trigger=None, symbols=("NIFTY",)):
+    """Run ``main() --once`` with mocked NSE/Supabase and optional log redirect.
+
+    Returns a namespace with the exit code, the captured log text (when
+    ``log_path`` redirects file logging), the fake Supabase client and the NSE
+    factory mock so callers can assert on every side effect.
+    """
+    supabase = FakeSupabase()
+    nse = FakeNSE(chain or chain_response())
+    nse_factory = mock.MagicMock(return_value=nse)
+    if log_path is not None:
+        bridge_worker.configure_log_file(log_path)
+    try:
+        with (
+            mock.patch.object(bridge_worker, "load_env_credentials", return_value=credentials),
+            mock.patch.object(bridge_worker, "create_client", return_value=supabase),
+            mock.patch.object(nse_core, "ist_now", return_value=RUN_NOW),
+            mock.patch.object(nse_core, "NSE", nse_factory),
+            mock.patch.object(nse_core, "market_open", return_value=market_open),
+        ):
+            if trigger:
+                with mock.patch.dict(os.environ, {"NSE_COLLECTOR_TRIGGER": trigger}):
+                    code = bridge_worker.main(["--once", "--symbol", *symbols])
+            else:
+                code = bridge_worker.main(["--once", "--symbol", *symbols])
+    finally:
+        if log_path is not None:
+            bridge_worker.reset_log_file()
+    text = ""
+    if log_path is not None and Path(log_path).exists():
+        text = Path(log_path).read_text(encoding="utf-8")
+    return SimpleNamespace(code=code, text=text, supabase=supabase, nse_factory=nse_factory)
+
+
+class LogIsolationTests(unittest.TestCase):
+    """Unit tests must never append to the production logs/collector.log."""
+
+    def test_running_main_from_a_test_leaves_the_production_log_untouched(self):
+        before = PRODUCTION_LOG.read_bytes() if PRODUCTION_LOG.exists() else None
+        result = run_worker_once()
+        after = PRODUCTION_LOG.read_bytes() if PRODUCTION_LOG.exists() else None
+        self.assertEqual(result.code, 0)
+        self.assertEqual(len(result.supabase.table_client.writes), 2)  # the cycle really ran
+        self.assertEqual(before, after)
+
+    def test_an_explicit_redirect_captures_the_run_instead(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log_path = Path(folder) / "collector.log"
+            result = run_worker_once(log_path=log_path)
+            self.assertEqual(result.code, 0)
+            self.assertTrue(log_path.exists())
+            self.assertIn("[ONE-SHOT] Start:", result.text)
+            self.assertIn("stage=write-live OK", result.text)
+
+    def test_log_resolution_prefers_explicit_redirect_then_env_then_guards(self):
+        bridge_worker.reset_log_file()
+        try:
+            # 1. explicit redirect wins even with a test runner loaded
+            with tempfile.TemporaryDirectory() as folder:
+                target = Path(folder) / "redirected.log"
+                bridge_worker.configure_log_file(target)
+                self.assertEqual(bridge_worker.resolve_log_file(), target)
+
+            # 2. NSE_COLLECTOR_LOG=off forces console-only output
+            bridge_worker.reset_log_file()
+            with mock.patch.dict(os.environ, {"NSE_COLLECTOR_LOG": "off"}):
+                self.assertIsNone(bridge_worker.resolve_log_file())
+
+            # 3. NSE_COLLECTOR_LOG=<path> redirects explicitly
+            with mock.patch.dict(os.environ, {"NSE_COLLECTOR_LOG": str(ROOT / "logs" / "other.log")}):
+                self.assertEqual(bridge_worker.resolve_log_file(), ROOT / "logs" / "other.log")
+
+            # 4. with a test runner loaded (and nothing else set) the answer is
+            #    console-only, even though main() arms file logging
+            bridge_worker.reset_log_file()
+            bridge_worker._file_logging_armed = True
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertIsNone(bridge_worker.resolve_log_file())
+        finally:
+            bridge_worker.reset_log_file()
+            bridge_worker._file_logging_armed = False
+
+    def test_run_cycle_can_log_through_an_injected_sink(self):
+        supabase = FakeSupabase()
+        lines = []
+        bridge_worker.run_cycle(
+            supabase, FakeNSE(chain_response()), ["NIFTY"], now=RUN_NOW, log=lines.append
+        )
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(supabase.table_client.writes), 2)
+
+
+class OneShotAuditLogTests(unittest.TestCase):
+    """Every scheduled --once run must leave a complete, secret-free record."""
+
+    def test_allowed_run_records_start_calendar_stages_and_end(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = run_worker_once(log_path=Path(folder) / "audit.log", trigger="scheduled")
+            text = result.text
+
+        self.assertEqual(result.code, 0)
+        self.assertEqual(len(result.supabase.table_client.writes), 2)
+        self.assertRegex(
+            text,
+            r"\[ONE-SHOT\] Start: 2026-10-23 15:30:00 IST trigger=scheduled pid=\d+",
+        )
+        self.assertIn("[ONE-SHOT] Symbols: NIFTY", text)
+        self.assertIn("[ONE-SHOT] Calendar: ", text)
+        self.assertIn("[ONE-SHOT] Calendar decision: ALLOWED at 2026-10-23 15:30:00 IST", text)
+        for stage in (
+            "stage=fetch OK",
+            "stage=validate OK",
+            "stage=write-live OK",
+            "stage=write-history OK",
+        ):
+            self.assertIn(stage, text)
+        self.assertIn("1 succeeded, 0 failed", text)
+        self.assertRegex(
+            text,
+            r"\[ONE-SHOT\] End: status=completed exit=0 trigger=scheduled "
+            r"end=2026-10-23 15:30:00 IST",
+        )
+        self.assertLess(text.index("[ONE-SHOT] Start:"), text.index("[ONE-SHOT] End:"))
+
+    def test_blocked_run_is_recorded_without_fetching_or_writing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = run_worker_once(
+                log_path=Path(folder) / "audit.log", market_open=False, trigger="scheduled"
+            )
+            text = result.text
+
+        self.assertEqual(result.code, 0)
+        self.assertIn("[ONE-SHOT] Calendar decision: BLOCKED at 2026-10-23 15:30:00 IST", text)
+        self.assertIn("no NSE fetch, no database write", text)
+        self.assertIn("End: status=blocked-market-closed exit=0", text)
+        self.assertNotIn("stage=", text)
+        self.assertNotIn("live snapshot upserted", text)
+        self.assertEqual(result.supabase.table_client.writes, [])
+        self.assertEqual(result.supabase.tables, [])
+        result.nse_factory.assert_not_called()
+
+    def test_failed_run_records_the_failing_stage_and_exit_code(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = run_worker_once(
+                log_path=Path(folder) / "audit.log",
+                chain=chain_response(timestamp="22-Oct-2026 10:00:00"),
+            )
+            text = result.text
+
+        self.assertEqual(result.code, 1)
+        self.assertIn("stage=validate FAILED", text)
+        self.assertIn("Error: NIFTY:", text)
+        self.assertIn("End: status=failed exit=1", text)
+        self.assertEqual(result.supabase.table_client.writes, [])
+
+    def test_manual_and_scheduled_runs_are_distinguishable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            scheduled = run_worker_once(log_path=folder / "s.log", trigger="scheduled")
+            manual = run_worker_once(log_path=folder / "m.log", trigger="manual")
+            inherited = run_worker_once(log_path=folder / "i.log")  # parent decides
+
+        self.assertIn("trigger=scheduled", scheduled.text)
+        self.assertIn("trigger=manual", manual.text)
+        self.assertEqual(inherited.code, 0)
+        # This suite runs under a plain interpreter, never under Task Scheduler.
+        self.assertIn("trigger=manual", inherited.text)
+
+    def test_once_mode_never_creates_the_daemon_pid_file(self):
+        existed = bridge_worker.PID_FILE.exists()
+        result = run_worker_once()
+        self.assertEqual(result.code, 0)
+        self.assertEqual(bridge_worker.PID_FILE.exists(), existed)
+
+    def test_audit_log_never_contains_credentials(self):
+        key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.top-secret-service-role-key"
+        with tempfile.TemporaryDirectory() as folder:
+            result = run_worker_once(
+                log_path=Path(folder) / "audit.log",
+                credentials=("https://example-project.supabase.co", key),
+            )
+        self.assertEqual(result.code, 0)
+        self.assertNotIn(key, result.text)
+        self.assertNotIn(key[:12], result.text)
+        self.assertIn("key: configured (length", result.text)  # metadata only
+
+
+class StageLoggingTests(unittest.TestCase):
+    """run_cycle labels fetch / validate / write outcomes per symbol."""
+
+    def test_success_path_logs_every_stage_in_order(self):
+        supabase = FakeSupabase()
+        lines = []
+        bridge_worker.run_cycle(
+            supabase, FakeNSE(chain_response()), ["NIFTY"], now=RUN_NOW, log=lines.append
+        )
+        joined = "\n".join(lines)
+        positions = [joined.index(f"stage={s} OK") for s in
+                     ("fetch", "validate", "write-live", "write-history")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("NIFTY", joined)
+
+    def test_validation_failure_is_labelled_with_the_failing_stage(self):
+        supabase = FakeSupabase()
+        lines = []
+        bridge_worker.run_cycle(
+            supabase,
+            FakeNSE(chain_response(timestamp="22-Oct-2026 10:00:00")),
+            ["NIFTY"],
+            now=RUN_NOW,
+            log=lines.append,
+        )
+        self.assertIn("stage=validate FAILED", "\n".join(lines))
+        self.assertEqual(supabase.table_client.writes, [])
+
+    def test_fetch_failure_is_labelled_with_the_failing_stage(self):
+        supabase = FakeSupabase()
+        lines = []
+        bridge_worker.run_cycle(
+            supabase, FakeNSE(chain_response(), expiries=()), ["NIFTY"],
+            now=RUN_NOW, log=lines.append,
+        )
+        self.assertIn("stage=fetch FAILED", "\n".join(lines))
+        self.assertIn("no expiries", "\n".join(lines))
+        self.assertEqual(supabase.table_client.writes, [])
+
+    def test_one_symbol_failure_does_not_hide_the_other_symbols_stages(self):
+        supabase = FakeSupabase()
+
+        class MixedNSE(FakeNSE):
+            def get(self, path, params=None):
+                if "FINNIFTY" in str(params):
+                    raise RuntimeError("connection reset")
+                return super().get(path, params)
+
+        lines = []
+        bridge_worker.run_cycle(
+            supabase, MixedNSE(chain_response()), ["NIFTY", "FINNIFTY"],
+            now=RUN_NOW, log=lines.append,
+        )
+        joined = "\n".join(lines)
+        self.assertIn("stage=write-history OK", joined)
+        self.assertIn("stage=fetch FAILED", joined)
+        self.assertIn("connection reset", joined)
+
+
+class TriggerDetectionTests(unittest.TestCase):
+    """Scheduled runs must be told apart from manually launched ones."""
+
+    def test_scheduler_host_processes_are_detected(self):
+        for name in ("svchost.exe", "taskeng.exe", "taskhostw.exe", "taskschd.exe",
+                     "Svchost.EXE"):
+            self.assertEqual(bridge_worker.detect_trigger(name), "scheduled", name)
+
+    def test_any_other_parent_means_manual(self):
+        for name in ("powershell.exe", "cmd.exe", "python.exe", "explorer.exe", None):
+            if name is None:
+                # Falls back to the real parent process of this test run.
+                self.assertIn(
+                    bridge_worker.detect_trigger(None), {"scheduled", "manual"}
+                )
+            else:
+                self.assertEqual(bridge_worker.detect_trigger(name), "manual", name)
+
+    def test_env_override_wins_over_the_parent_guess(self):
+        with mock.patch.dict(os.environ, {"NSE_COLLECTOR_TRIGGER": "scheduled"}):
+            self.assertEqual(bridge_worker.detect_trigger("python.exe"), "scheduled")
+        with mock.patch.dict(os.environ, {"NSE_COLLECTOR_TRIGGER": "manual"}):
+            self.assertEqual(bridge_worker.detect_trigger("svchost.exe"), "manual")
+        with mock.patch.dict(os.environ, {"NSE_COLLECTOR_TRIGGER": "nonsense"}):
+            self.assertEqual(bridge_worker.detect_trigger("svchost.exe"), "scheduled")
+
+    def test_key_masking_never_echoes_key_material(self):
+        key = "abcdefghijklmnop"
+        masked = bridge_worker.mask_key(key)
+        self.assertNotIn("abc", masked)
+        self.assertNotIn(key, masked)
+        self.assertEqual(bridge_worker.mask_key(None), "not set")
+
+
+class ScheduledTaskScriptTests(unittest.TestCase):
+    """The install/uninstall scripts must encode the required task contract."""
+
+    TASK_NAME = "NSE Option Chain Live Collector"
+    INSTALL = ROOT / "scripts" / "Install-Collector-ScheduledTask.ps1"
+    UNINSTALL = ROOT / "scripts" / "Uninstall-Collector-ScheduledTask.ps1"
+    EXPECTED_ARGS = "worker\\bridge_worker.py --once --symbol NIFTY BANKNIFTY FINNIFTY"
+
+    def install_text(self):
+        self.assertTrue(self.INSTALL.exists(), "install script is missing")
+        return self.INSTALL.read_text(encoding="utf-8")
+
+    def uninstall_text(self):
+        self.assertTrue(self.UNINSTALL.exists(), "uninstall script is missing")
+        return self.UNINSTALL.read_text(encoding="utf-8")
+
+    def test_install_script_builds_the_required_command_and_arguments(self):
+        text = self.install_text()
+        self.assertIn(f"[string]$TaskName = '{self.TASK_NAME}'", text)
+        self.assertIn(f"[string]$WorkerArgs = '{self.EXPECTED_ARGS}'", text)
+        self.assertIn("-Execute $PythonPath", text)
+        self.assertIn("-Argument $WorkerArgs", text)
+        self.assertIn("-WorkingDirectory $repoRoot", text)
+        self.assertIn("worker\\bridge_worker.py", text)
+        self.assertIn("--once", text)
+
+    def test_install_script_targets_the_exact_repository_interpreter(self):
+        text = self.install_text()
+        self.assertIn(str(sys.executable), text)
+
+    def test_install_script_never_uses_forbidden_modes_or_launchers(self):
+        text = self.install_text()
+        self.assertNotIn("run_bridge.bat", text)
+        self.assertNotIn("Start-Live-Collector.bat", text)
+        # "--always" may appear only as a pattern that is explicitly rejected.
+        offending = [
+            line for line in text.splitlines()
+            if "--always" in line and "-match" not in line
+        ]
+        self.assertEqual(offending, [], f"--always must never be actionable: {offending}")
+
+    def test_install_script_configures_safe_scheduling(self):
+        text = self.install_text()
+        self.assertIn("-MultipleInstances IgnoreNew", text)  # no overlapping runs
+        self.assertIn("-StartWhenAvailable", text)
+        self.assertIn("-LogonType Interactive", text)  # no stored password
+        self.assertIn("New-ScheduledTaskTrigger -Daily", text)  # weekends included
+        self.assertIn("-RepetitionInterval", text)
+        self.assertIn("-RepetitionDuration", text)
+        self.assertIn("-ExecutionTimeLimit", text)
+        self.assertIn("-RestartCount", text)
+        self.assertNotIn("-LogonType Password", text)
+        self.assertNotIn("-RunLevel Highest", text)
+
+    def test_overlapping_invocations_cannot_stack(self):
+        text = self.install_text()
+        self.assertIn("-MultipleInstances IgnoreNew", text)
+        self.assertIn("--once", text)  # each run exits after a single cycle
+        self.assertNotIn("--interval", text)  # no long-lived polling loop
+
+    def test_uninstall_script_removes_only_the_collector_task(self):
+        text = self.uninstall_text()
+        self.assertIn(f"[string]$TaskName = '{self.TASK_NAME}'", text)
+        self.assertIn("Unregister-ScheduledTask -TaskName $TaskName", text)
+        self.assertNotIn("-TaskName *", text)
+        self.assertNotIn("$TaskName*", text)
+
+    def test_install_and_uninstall_agree_on_the_task_name(self):
+        self.assertIn(
+            f"'{self.TASK_NAME}'", self.uninstall_text()
+        )
 
 
 if __name__ == "__main__":

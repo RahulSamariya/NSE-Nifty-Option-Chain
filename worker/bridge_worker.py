@@ -46,18 +46,71 @@ STOP_FILE = ROOT / ".collector.stop"
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "collector.log"
 
+# --------------------------------------------------------------------------
+# Log destination.
+#
+# Production appends to LOG_FILE. Unit tests must never touch that file, so
+# four independent guards exist (first match wins):
+#
+#   1. configure_log_file(path)   explicit redirect (path=None = console only)
+#   2. NSE_COLLECTOR_LOG env var  a path, or "off" to disable file logging
+#   3. file logging not armed     only main() arms it, so a test that calls
+#                                 run_cycle() directly never opens a file
+#   4. a loaded test runner       unittest/pytest in sys.modules => console
+#
+# Existing log contents are always appended to, never truncated or deleted.
+# --------------------------------------------------------------------------
+_UNSET = object()
+_log_file_override = _UNSET
+_file_logging_armed = False
+
+
+def configure_log_file(path):
+    """Redirect file logging. ``path=None`` sends every line to the console."""
+    global _log_file_override
+    _log_file_override = None if path is None else Path(path)
+
+
+def reset_log_file():
+    """Forget an explicit redirect and fall back to standard resolution."""
+    global _log_file_override
+    _log_file_override = _UNSET
+
+
+def _test_runner_loaded():
+    return any(name in sys.modules for name in ("unittest", "pytest", "_pytest"))
+
+
+def resolve_log_file():
+    """Where log lines are appended, or ``None`` for console-only output."""
+    if _log_file_override is not _UNSET:
+        return _log_file_override
+    env = os.environ.get("NSE_COLLECTOR_LOG", "").strip()
+    if env:
+        if env.lower() in {"off", "none", "0"}:
+            return None
+        return Path(env)
+    if not _file_logging_armed:
+        return None
+    if _test_runner_loaded():
+        return None
+    return LOG_FILE
+
 
 def log_message(msg: str):
-    """Print to console and append to logs/collector.log with IST timestamp."""
+    """Print to console and append to the resolved log file with IST timestamp."""
     try:
         now_str = f"[{nc.ist_now():%Y-%m-%d %H:%M:%S IST}]"
     except Exception:
         now_str = f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}]"
     line = f"{now_str} {msg}"
     print(line)
+    destination = resolve_log_file()
+    if destination is None:
+        return
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with open(destination, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
@@ -80,13 +133,12 @@ def mask_url(url: str | None) -> str:
 
 
 def mask_key(key: str | None) -> str:
-    """Display key metadata safely without revealing secret content."""
+    """Describe key metadata without echoing any character of the key itself."""
     if not key:
         return "not set"
     if "your-service-role-key" in key:
-        return f"placeholder ('{key}')"
-    prefix = key[:6] if len(key) >= 6 else key[:2]
-    return f"configured (length {len(key)}, prefix '{prefix}***')"
+        return "placeholder (default example value)"
+    return f"configured (length {len(key)}; no key material logged)"
 
 
 def check_configuration():
@@ -105,6 +157,88 @@ def check_configuration():
     elif "your-service-role-key" in key:
         issues.append("SUPABASE_KEY still contains default placeholder 'your-service-role-key'.")
     return url, key, issues
+
+
+# Host processes Windows Task Scheduler uses to launch a task action. Any other
+# parent (powershell.exe, cmd.exe, a shell-launched python.exe) means a person
+# started the run. NSE_COLLECTOR_TRIGGER overrides the guess so an operator can
+# force the label without changing the scheduled command line.
+SCHEDULER_PARENTS = frozenset(
+    {"svchost.exe", "taskeng.exe", "taskhostw.exe", "taskschd.exe"}
+)
+
+
+def parent_process_name():
+    """Name of this process's parent executable, or None if undeterminable.
+
+    Uses a Toolhelp32 process snapshot, so no extra package or subprocess is
+    needed. Any failure degrades to None instead of breaking a collection.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32First.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESSENTRY32),
+        ]
+        kernel32.Process32First.restype = wintypes.BOOL
+        kernel32.Process32Next.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESSENTRY32),
+        ]
+        kernel32.Process32Next.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snapshot:
+            return None
+        names = {}
+        try:
+            entry = PROCESSENTRY32()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            ok = kernel32.Process32First(snapshot, ctypes.byref(entry))
+            while ok:
+                names[entry.th32ProcessID] = entry.szExeFile.decode(errors="ignore")
+                ok = kernel32.Process32Next(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        return names.get(os.getppid())
+    except Exception:  # noqa: BLE001 - diagnostics only, never break a collection
+        return None
+
+
+def detect_trigger(parent_name=None):
+    """Classify this run as ``scheduled`` (Task Scheduler) or ``manual``."""
+    forced = os.environ.get("NSE_COLLECTOR_TRIGGER", "").strip().lower()
+    if forced in {"scheduled", "manual"}:
+        return forced
+    if parent_name is None:
+        parent_name = parent_process_name()
+    if parent_name and parent_name.lower() in SCHEDULER_PARENTS:
+        return "scheduled"
+    return "manual"
 
 
 def interruptible_sleep(seconds: float) -> bool:
@@ -240,16 +374,24 @@ def build_payload(symbol, expiry, df, spot, nse_ts, summary):
     }
 
 
-def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
+def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None, log=None):
     """Collect one snapshot per symbol and write the valid ones.
 
     A failure for one symbol (NSE timeout, stale timestamp, bad chain, database
     error) is reported and never blocks the others. The previously stored
     snapshot is left untouched because a row is only written after validation.
 
+    Every stage is logged per symbol - ``stage=fetch`` (NSE round-trip),
+    ``stage=validate`` (freshness/shape checks), ``stage=write-live`` and
+    ``stage=write-history`` (Supabase) - each ending in ``OK`` or ``FAILED``
+    so a scheduled run is auditable without reading code. ``log`` injects the
+    sink (tests pass a list-appending callable instead of touching the
+    production log); it defaults to :func:`log_message`.
+
     Returns a dict with the (possibly re-created) NSE client, the symbols that
     succeeded/failed, and the number of live and history writes.
     """
+    log = log or log_message
     now = now or nc.ist_now()
     last_history_time = {} if last_history_time is None else last_history_time
     succeeded, failed, errors = [], [], []
@@ -258,6 +400,7 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
 
     for sym in symbols:
         nse_ts = "unavailable"
+        stage = "fetch"
         try:
             expiries = nc.get_expiries(nse_client, sym)
             if not expiries:
@@ -266,19 +409,31 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
 
             raw = nc.get_chain(nse_client, sym, expiry, kind="Indices")
             df, spot, nse_ts = nc.parse(raw)
+            log(
+                f"{sym:<10} | stage=fetch OK | NSE source: {nse_ts} | "
+                f"expiry: {expiry} | expiries: {len(expiries)} | rows: {len(df)}"
+            )
+
+            stage = "validate"
             spot = validate_snapshot(df, spot, nse_ts, now=now)
             summary = nc.summarize(df, spot)
             payload = build_payload(sym, expiry, df, spot, nse_ts, summary)
+            log(
+                f"{sym:<10} | stage=validate OK | NSE source: {nse_ts} | "
+                f"spot: {spot:.2f} | rows: {len(df)}"
+            )
 
+            stage = "write-live"
             upsert_live_snapshot(sb, payload, now=now)
             live_writes += 1
-            log_message(
-                f"{sym:<10} | NSE source: {nse_ts} | spot: {spot:.2f} | "
-                "live snapshot upserted successfully"
+            log(
+                f"{sym:<10} | stage=write-live OK | NSE source: {nse_ts} | "
+                f"spot: {spot:.2f} | live snapshot upserted successfully"
             )
 
             # Append a history point at most every five minutes.
             if time.time() - last_history_time.get(sym, 0) >= HISTORY_INTERVAL_SECONDS:
+                stage = "write-history"
                 insert_history_snapshot(
                     sb,
                     {
@@ -294,8 +449,8 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
                 )
                 last_history_time[sym] = time.time()
                 history_writes += 1
-                log_message(
-                    f"{sym:<10} | NSE source: {nse_ts} | "
+                log(
+                    f"{sym:<10} | stage=write-history OK | NSE source: {nse_ts} | "
                     "history record inserted successfully"
                 )
 
@@ -303,7 +458,9 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
         except Exception as exc:  # noqa: BLE001 - one symbol must not stop the rest
             failed.append(sym)
             errors.append(f"{sym}: {exc}")
-            log_message(f"{sym:<10} | NSE source: {nse_ts} | FAILED: {exc}")
+            log(
+                f"{sym:<10} | stage={stage} FAILED | NSE source: {nse_ts} | {exc}"
+            )
             # Re-warm the session after a network error.
             try:
                 nse_client = nc.NSE()
@@ -320,7 +477,110 @@ def run_cycle(sb, nse_client, symbols, last_history_time=None, now=None):
     }
 
 
+def _run_one_shot(args, symbols):
+    """Run one audited collection cycle and return its exit code.
+
+    This is the path Windows Task Scheduler executes every five minutes. Every
+    run leaves a complete, secret-free record in the collector log: start time,
+    trigger (scheduled vs manual), symbols, the calendar decision, per-symbol
+    fetch/validate/write outcomes (emitted by :func:`run_cycle`), the final
+    status with its exit code, and the end time. All timestamps are IST.
+
+    Exit codes: 0 = completed or safely blocked by the calendar, 1 = the run
+    failed (credentials, NSE session, every symbol), 2 = the command or the
+    holiday calendar is unusable.
+    """
+    started = nc.ist_now()
+    trigger = detect_trigger()
+
+    def emit(msg: str) -> None:
+        log_message(f"[ONE-SHOT] {msg}")
+
+    def finish(status: str, code: int) -> int:
+        ended = nc.ist_now()
+        emit(
+            f"End: status={status} exit={code} trigger={trigger} "
+            f"end={ended:%Y-%m-%d %H:%M:%S IST}"
+        )
+        return code
+
+    emit(f"Start: {started:%Y-%m-%d %H:%M:%S IST} trigger={trigger} pid={os.getpid()}")
+    emit(f"Symbols: {', '.join(symbols) if symbols else '(none)'}")
+    emit("Mode: --once single cycle; the market calendar decides this run")
+
+    if not symbols:
+        emit("Command: FAILED - no symbols were given.")
+        return finish("failed-command", 2)
+
+    try:
+        holidays = nc.load_holidays(args.holidays)
+    except (OSError, ValueError) as exc:
+        emit(f"Calendar: FAILED - could not read {Path(args.holidays).name}: {exc}")
+        return finish("failed-calendar", 2)
+    calendar_note = (
+        f"{len(holidays)} holiday(s) from {Path(args.holidays).name}"
+        if holidays
+        else f"no holidays in {Path(args.holidays).name} (weekdays only)"
+    )
+    emit(f"Calendar: {calendar_note}")
+
+    supabase_url, supabase_key = load_env_credentials()
+    if not supabase_url or not supabase_key:
+        emit("Config: FAILED - Supabase credentials are missing (set them in .env).")
+        return finish("failed-config", 1)
+    emit(f"Config: OK | Supabase target: {mask_url(supabase_url)} | key: {mask_key(supabase_key)}")
+
+    now = nc.ist_now()
+    if args.always:
+        emit(
+            f"Calendar decision: ALLOWED at {now:%Y-%m-%d %H:%M:%S IST} "
+            "(--always override; never used by the scheduled task)"
+        )
+    elif nc.market_open(now, holidays=holidays):
+        emit(f"Calendar decision: ALLOWED at {now:%Y-%m-%d %H:%M:%S IST}")
+    else:
+        emit(
+            f"Calendar decision: BLOCKED at {now:%Y-%m-%d %H:%M:%S IST} - market "
+            "closed (weekend, exchange holiday or outside the session); "
+            "no NSE fetch, no database write."
+        )
+        return finish("blocked-market-closed", 0)
+
+    try:
+        nse_client = nc.NSE()
+    except Exception as exc:  # session warm-up can fail without network
+        emit(f"NSE session: FAILED to start: {exc}")
+        return finish("failed-nse-session", 1)
+    emit("NSE session: started")
+
+    sb: Client = create_client(supabase_url, supabase_key)
+    result = run_cycle(sb, nse_client, symbols)
+    if not result["failed"]:
+        status, code = "completed", 0
+    elif result["succeeded"]:
+        status, code = "completed-with-failures", 1
+    else:
+        status, code = "failed", 1
+    emit(
+        f"Summary: {len(result['succeeded'])} succeeded, {len(result['failed'])} failed | "
+        f"{result['live_writes']} live write(s), "
+        f"{result['history_writes']} history write(s)"
+    )
+    for error in result["errors"]:
+        emit(f"Error: {error}")
+    return finish(status, code)
+
+
 def main(argv=None):
+    """Entry point. Arms production file logging for real runs only.
+
+    ``resolve_log_file()`` still refuses to touch the log while a test runner
+    is loaded, so calling ``main()`` from a unit test never pollutes
+    ``logs/collector.log`` (an explicit ``configure_log_file()`` redirect wins).
+    """
+    global _file_logging_armed
+    _file_logging_armed = True
+
     parser = argparse.ArgumentParser(description="NSE to Supabase Bridge Worker")
     parser.add_argument("--symbol", nargs="+", default=["NIFTY", "BANKNIFTY", "FINNIFTY"],
                         help="Symbols to monitor (default: NIFTY BANKNIFTY FINNIFTY)")
@@ -340,6 +600,11 @@ def main(argv=None):
         symbol = raw_symbol.strip().upper()
         if symbol and symbol not in symbols:
             symbols.append(symbol)
+
+    if args.once:
+        # Audited one-shot path: every exit is logged with status + exit code.
+        return _run_one_shot(args, symbols)
+
     if not symbols:
         print("[!] --symbol needs at least one symbol")
         return 2
@@ -365,31 +630,6 @@ def main(argv=None):
         if holidays
         else f"no holidays in {Path(args.holidays).name} (weekdays only)"
     )
-
-    if args.once:
-        print("[*] Connected to Supabase")
-        print(f"[*] Monitoring symbols: {symbols}")
-        print(f"[*] Market calendar: Mon-Fri 09:15-15:35 IST; {calendar_note}")
-        now = nc.ist_now()
-        if not (args.always or nc.market_open(now, holidays=holidays)):
-            print(
-                f"[{now:%H:%M:%S}] Market closed (weekend or exchange holiday): "
-                "single cycle skipped, nothing was written."
-            )
-            return 0
-
-        try:
-            nse_client = nc.NSE()
-        except Exception as exc:  # session warm-up can fail without network
-            print(f"[!] Could not start the NSE client: {exc}")
-            return 1
-
-        result = run_cycle(sb, nse_client, symbols)
-        print(
-            f"[*] Single cycle finished: {len(result['succeeded'])} symbol(s) written, "
-            f"{len(result['failed'])} failed."
-        )
-        return 0 if not result["failed"] else 1
 
     # Continuous running mode
     # 1. Manage PID file for safe stop

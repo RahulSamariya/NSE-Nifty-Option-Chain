@@ -119,9 +119,13 @@ export interface SpecialSession {
 
 export const SPECIAL_SESSIONS_2026: readonly SpecialSession[] = [
   {
-    date: "2026-11-08", // Diwali Muhurat Trading
-    openMinute: 18 * 60, // 18:00 IST
-    closeMinute: 19 * 60 + 15, // 19:15 IST
+    // Diwali Muhurat trading, Sunday 8 Nov 2026. NSE circular: pre-open
+    // 14:05-14:20, equity continuous 14:20-15:30, F&O 14:20-15:40 IST.
+    // The option chain is F&O data, so the wider derivatives window applies -
+    // identical to SPECIAL_SESSIONS_2026 in core/nse_core.py (backend).
+    date: "2026-11-08",
+    openMinute: 14 * 60 + 20, // 14:20 IST
+    closeMinute: 15 * 60 + 40, // 15:40 IST
   },
 ];
 

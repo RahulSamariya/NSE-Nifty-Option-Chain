@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SPECIAL_SESSIONS_2026,
   getSnapshotFreshness,
   getSnapshotStatus,
   isIndianMarketOpen,
@@ -42,17 +43,31 @@ describe("isIndianMarketOpen", () => {
     expect(isIndianMarketOpen(new Date("2026-12-25T05:30:00Z"))).toBe(false);
   });
 
-  it("handles special trading sessions like Diwali Muhurat trading", () => {
-    // 2026-11-08 Sunday Diwali Muhurat Trading (18:00 - 19:15 IST = 12:30 - 13:45 UTC)
-    const duringMuhurat = new Date("2026-11-08T13:00:00Z"); // 18:30 IST
-    const beforeMuhurat = new Date("2026-11-08T12:20:00Z"); // 17:50 IST
-    const afterMuhurat = new Date("2026-11-08T14:00:00Z"); // 19:30 IST
-    const sundayMorning = new Date("2026-11-08T05:30:00Z"); // 11:00 IST
+  it("keeps Sunday 8 Nov 2026 Muhurat F&O session open from 14:20 to 15:40 IST", () => {
+    // Same window as SPECIAL_SESSIONS_2026 in core/nse_core.py (backend):
+    // NSE's official Diwali Muhurat derivatives session, 14:20-15:40 IST on
+    // Sunday 8 November 2026. The old 18:00-19:15 evening window is closed.
+    const boundaries: ReadonlyArray<readonly [string, boolean]> = [
+      ["2026-11-08T05:30:00Z", false], // Sun 11:00 IST - long before the session
+      ["2026-11-08T08:49:00Z", false], // Sun 14:19 IST - one minute before open
+      ["2026-11-08T08:50:00Z", true], //  Sun 14:20 IST - open
+      ["2026-11-08T10:00:00Z", true], //  Sun 15:30 IST - equity close, F&O continues
+      ["2026-11-08T10:05:00Z", true], //  Sun 15:35 IST - open
+      ["2026-11-08T10:10:00Z", true], //  Sun 15:40 IST - open (inclusive)
+      ["2026-11-08T10:11:00Z", false], // Sun 15:41 IST - one minute after close
+      ["2026-11-08T13:00:00Z", false], // Sun 18:30 IST - old evening window closed
+      ["2026-11-09T03:45:00Z", true], //  Mon 09:15 IST - normal session opens
+      ["2026-11-09T10:06:00Z", false], // Mon 15:36 IST - normal session closed
+    ];
+    for (const [iso, expected] of boundaries) {
+      expect(isIndianMarketOpen(new Date(iso)), `${iso} should be ${expected}`).toBe(expected);
+    }
+  });
 
-    expect(isIndianMarketOpen(duringMuhurat)).toBe(true);
-    expect(isIndianMarketOpen(beforeMuhurat)).toBe(false);
-    expect(isIndianMarketOpen(afterMuhurat)).toBe(false);
-    expect(isIndianMarketOpen(sundayMorning)).toBe(false);
+  it("declares the same Muhurat window as the backend calendar", () => {
+    expect(SPECIAL_SESSIONS_2026).toEqual([
+      { date: "2026-11-08", openMinute: 14 * 60 + 20, closeMinute: 15 * 60 + 40 },
+    ]);
   });
 });
 
