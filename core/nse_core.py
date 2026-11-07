@@ -162,8 +162,20 @@ def _holiday_date(value):
     return dt.date.fromisoformat(str(value).strip())
 
 
+#: Diwali Laxmi Pujan special live trading sessions for 2026, keyed by date and
+#: mapped to (open, close) in IST.
+#:
+#: 2026-11-08 is a Sunday, so the normal weekday gate below would otherwise keep
+#: the collector asleep for the whole session. Per the NSE circular (special
+#: live trading session on Sunday, 08-Nov-2026):
+#:   * pre-open            14:05 - 14:20 IST  (no option-chain data yet)
+#:   * equity continuous   14:20 - 15:30 IST
+#:   * equity derivatives  14:20 - 15:40 IST  <- this collector scrapes F&O,
+#:                                                so the wider window applies.
+#: The previous 18:00-19:15 entry was an evening-session assumption and did not
+#: match the officially scheduled daytime session at all.
 SPECIAL_SESSIONS_2026 = {
-    dt.date(2026, 11, 8): (dt.time(18, 0), dt.time(19, 15)),  # Diwali Muhurat Trading
+    dt.date(2026, 11, 8): (dt.time(14, 20), dt.time(15, 40)),  # Diwali Muhurat (F&O)
 }
 
 

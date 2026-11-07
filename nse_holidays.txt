@@ -25,4 +25,6 @@
 # 2026-08-15 (Saturday - Independence Day)
 #
 # Special Trading Sessions:
-# 2026-11-08 (Sunday - Diwali Laxmi Pujan - Muhurat Trading session 18:00-19:15 IST)
+# 2026-11-08 (Sunday - Diwali Laxmi Pujan - special live trading session)
+#   pre-open 14:05-14:20 IST; equity 14:20-15:30 IST; equity derivatives 14:20-15:40 IST
+#   (handled by SPECIAL_SESSIONS_2026 in core/nse_core.py, not by this list)

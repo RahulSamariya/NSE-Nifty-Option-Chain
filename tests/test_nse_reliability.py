@@ -194,16 +194,52 @@ class MarketCalendarTests(unittest.TestCase):
         # A holiday on another date changes nothing.
         self.assertTrue(nse_core.market_open(friday, holidays={"2026-11-09"}))
 
-    def test_special_trading_session_muhurat_trading_allows_open_market(self):
-        during_session = dt.datetime(2026, 11, 8, 18, 30, tzinfo=IST)
-        before_session = dt.datetime(2026, 11, 8, 17, 59, tzinfo=IST)
-        after_session = dt.datetime(2026, 11, 8, 19, 16, tzinfo=IST)
-        noon_same_day = dt.datetime(2026, 11, 8, 12, 0, tzinfo=IST)
+    def test_declared_muhurat_window_matches_the_official_fo_session(self):
+        # NSE special live trading session, Sunday 08-Nov-2026: the equity
+        # derivatives segment this collector scrapes trades 14:20-15:40 IST
+        # (equity cash market trades 14:20-15:30 IST; pre-open 14:05-14:20).
+        # The earlier 18:00-19:15 entry would have slept through the session.
+        self.assertEqual(
+            nse_core.SPECIAL_SESSIONS_2026[dt.date(2026, 11, 8)],
+            (dt.time(14, 20), dt.time(15, 40)),
+        )
 
-        self.assertTrue(nse_core.market_open(during_session))
-        self.assertFalse(nse_core.market_open(before_session))
-        self.assertFalse(nse_core.market_open(after_session))
-        self.assertFalse(nse_core.market_open(noon_same_day))
+    def test_muhurat_session_is_open_only_between_1420_and_1540_ist(self):
+        cases = [
+            (dt.datetime(2026, 11, 8, 14, 19, tzinfo=IST), False),  # before open
+            (dt.datetime(2026, 11, 8, 14, 20, tzinfo=IST), True),   # first minute
+            (dt.datetime(2026, 11, 8, 14, 30, tzinfo=IST), True),   # mid-session
+            (dt.datetime(2026, 11, 8, 15, 30, tzinfo=IST), True),   # equity close
+            (dt.datetime(2026, 11, 8, 15, 35, tzinfo=IST), True),   # F&O still open
+            (dt.datetime(2026, 11, 8, 15, 40, tzinfo=IST), True),   # last minute
+            (dt.datetime(2026, 11, 8, 15, 41, tzinfo=IST), False),  # after close
+            (dt.datetime(2026, 11, 8, 12, 0, tzinfo=IST), False),   # Sunday midday
+            (dt.datetime(2026, 11, 8, 18, 30, tzinfo=IST), False),  # old wrong window
+        ]
+        for moment, expected in cases:
+            with self.subTest(moment=moment.isoformat()):
+                self.assertEqual(nse_core.market_open(moment), expected)
+
+    def test_muhurat_special_session_does_not_leak_to_neighbouring_days(self):
+        # Saturday 07-Nov: no special session, weekend gate holds.
+        self.assertFalse(nse_core.market_open(dt.datetime(2026, 11, 7, 14, 30, tzinfo=IST)))
+        # Sunday 08-Nov outside the window stays closed.
+        self.assertFalse(nse_core.market_open(dt.datetime(2026, 11, 8, 9, 30, tzinfo=IST)))
+        # Monday 09-Nov is an ordinary trading day (NSE's nearest NIFTY expiry),
+        # governed by the normal weekday window, not by the special session.
+        self.assertTrue(nse_core.market_open(dt.datetime(2026, 11, 9, 14, 30, tzinfo=IST)))
+        self.assertFalse(nse_core.market_open(dt.datetime(2026, 11, 9, 16, 0, tzinfo=IST)))
+
+    def test_muhurat_session_wins_even_if_the_date_is_listed_as_a_holiday(self):
+        # The special session is checked before the holiday calendar, so a
+        # future edit that adds 2026-11-08 to nse_holidays.txt cannot silently
+        # disable collection during the officially scheduled session.
+        self.assertTrue(
+            nse_core.market_open(
+                dt.datetime(2026, 11, 8, 14, 30, tzinfo=IST),
+                holidays={dt.date(2026, 11, 8)},
+            )
+        )
 
     def test_verified_2026_holidays_from_file_close_the_market(self):
         holidays = nse_core.load_holidays(ROOT / "nse_holidays.txt")
