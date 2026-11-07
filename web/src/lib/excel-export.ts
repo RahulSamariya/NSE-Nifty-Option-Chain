@@ -129,17 +129,6 @@ function addSummarySheet(
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 };
   sheet.getRow(1).height = 32;
 
-  sheet.mergeCells("A2:D2");
-  const subtitle = sheet.getCell("A2");
-  subtitle.value = importInfo
-    ? `Built in your browser from the imported file "${importInfo.fileName}". ` +
-      "This workbook is a point-in-time copy of that file and does not update by itself."
-    : "Generated from the validated NSE snapshot stored in Supabase. " +
-      "This workbook is a point-in-time snapshot and does not update by itself.";
-  subtitle.font = { size: 10, color: { argb: "FF475569" } };
-  subtitle.alignment = { vertical: "middle", wrapText: true, indent: 1 };
-  sheet.getRow(2).height = 28;
-
   const exportedRows = chainRows ?? record.raw_data;
   // An imported file has no exchange timestamp unless the file itself carried
   // one; the import time is recorded separately and never presented as NSE's.
@@ -147,11 +136,28 @@ function addSummarySheet(
     ? importInfo.exchangeTimestamp ?? "Not present in the imported file"
     : record.nse_timestamp ?? "unavailable";
   const statusLabel = importInfo ? "Imported snapshot" : status;
+  const isStale = status === "Stale";
+
+  sheet.mergeCells("A2:D2");
+  const subtitle = sheet.getCell("A2");
+  subtitle.value = importInfo
+    ? `Built in your browser from the imported file "${importInfo.fileName}". ` +
+      "This workbook is a point-in-time copy of that file and does not update by itself."
+    : isStale
+      ? `WARNING: This snapshot is STALE (NSE source timestamp: ${sourceTimestamp}). ` +
+        "Market data is out of date and does not reflect live or last-close session prices."
+      : "Generated from the validated NSE snapshot stored in Supabase. " +
+        "This workbook is a point-in-time snapshot and does not update by itself.";
+  subtitle.font = isStale && !importInfo
+    ? { bold: true, size: 10, color: { argb: "FFB91C1C" } }
+    : { size: 10, color: { argb: "FF475569" } };
+  subtitle.alignment = { vertical: "middle", wrapText: true, indent: 1 };
+  sheet.getRow(2).height = 28;
 
   const rows: Array<[string, ExcelJS.CellValue, string?]> = [
     ["Symbol", record.symbol],
     ["Expiry", record.expiry],
-    ["Underlying spot", record.spot, "#,##0.00"],
+    ["Underlying spot", record.spot !== null ? record.spot : "Unavailable", record.spot !== null ? "#,##0.00" : undefined],
     ["Put-Call Ratio (PCR)", record.pcr, "0.0000"],
     ["Max Pain strike", record.max_pain, "#,##0"],
     ["Total Call OI", record.total_ce_oi, "#,##0"],
@@ -170,6 +176,13 @@ function addSummarySheet(
     ["Workbook built at", istString(now ?? new Date())],
   ];
 
+  if (isStale && !importInfo) {
+    rows.splice(rows.findIndex(([label]) => label === "Snapshot status") + 1, 0, [
+      "Stale Data Warning",
+      `Snapshot is STALE (source: ${sourceTimestamp}). Do not treat as live market data.`,
+    ]);
+  }
+
   if (importInfo) {
     rows.splice(rows.length - 1, 0, [
       "Source file size",
@@ -185,7 +198,10 @@ function addSummarySheet(
     labelCell.font = { bold: true, color: { argb: "FF334155" } };
     valueCell.value = value as ExcelJS.CellValue;
     if (fmt && typeof value === "number") valueCell.numFmt = fmt;
-    if (label === "Snapshot status" || label === "Data source") {
+    if (label === "Stale Data Warning") {
+      valueCell.fill = patternFill("FFFEE2E2");
+      valueCell.font = { bold: true, color: { argb: "FFB91C1C" } };
+    } else if (label === "Snapshot status" || label === "Data source") {
       const style = importInfo
         ? { fill: "FFDBEAFE", text: "FF1E40AF" }
         : STATUS_STYLE[status];

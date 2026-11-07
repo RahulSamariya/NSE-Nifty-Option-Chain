@@ -13,7 +13,12 @@ export {
   parseNseTimestamp,
 } from "./market-status";
 export type { FreshnessReason, SnapshotFreshness, SnapshotStatus } from "./market-status";
-export { isOptionChainRecord, normalizeOptionChainRecord } from "./option-chain-record";
+export {
+  isImportedOptionChainRecord,
+  isOptionChainRecord,
+  normalizeImportedOptionChainRecord,
+  normalizeOptionChainRecord,
+} from "./option-chain-record";
 
 // Indian number formatting helper: 1,05,611
 export function formatIndian(val: number | string | null | undefined, decimals = 0): string {

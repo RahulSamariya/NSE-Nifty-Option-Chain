@@ -18,7 +18,7 @@
  * separately and the snapshot reports no source timestamp.
  */
 import type { OptionChainRecord, StrikeRow } from "@/types/option-chain";
-import { normalizeOptionChainRecord } from "./option-chain-record";
+import { normalizeImportedOptionChainRecord } from "./option-chain-record";
 import { summarizeChain } from "./chain-analytics";
 
 export const SUPPORTED_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"] as const;
@@ -26,7 +26,7 @@ export const SUPPORTED_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"] as const;
 export interface CsvImportMeta {
   symbol: string;
   expiry: string;
-  spot: number;
+  spot: number | null;
   /** "29-Oct-2026 15:30:00" when the file carried one, otherwise null. */
   exchangeTimestamp: string | null;
   /** Local time the file was parsed; never presented as an exchange time. */
@@ -951,14 +951,8 @@ export function parseNseOptionChainCsv(
         "NSE shows above the option chain, or re-download the CSV from NSE.",
     };
   }
-  if (spot === null || spot <= 0) {
-    return {
-      ok: false,
-      error:
-        "The file does not include the underlying index value (spot price). NSE shows this " +
-        "as 'Underlying Value' above the chain; the dashboard will not invent a spot price.",
-    };
-  }
+  // Spot is optional for CSV imports. Missing or non-positive spot is strictly represented as null, never zero.
+  const normalizedSpot = spot !== null && spot > 0 ? spot : null;
 
   rows.sort((a, b) => a.STRIKE - b.STRIKE);
 
@@ -966,7 +960,7 @@ export function parseNseOptionChainCsv(
   const candidate = {
     symbol,
     expiry,
-    spot,
+    spot: normalizedSpot,
     pcr: summary.pcr,
     max_pain: summary.maxPain,
     total_ce_oi: summary.totalCeOi,
@@ -976,7 +970,7 @@ export function parseNseOptionChainCsv(
     raw_data: rows,
   };
 
-  const record = normalizeOptionChainRecord(candidate);
+  const record = normalizeImportedOptionChainRecord(candidate);
   if (!record) {
     return {
       ok: false,

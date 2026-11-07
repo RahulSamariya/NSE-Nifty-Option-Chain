@@ -234,6 +234,21 @@ export function ExcelPanel(props: ExcelPanelProps) {
             </span>
           </div>
 
+          {status === "Stale" && (
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+              <div>
+                <p className="font-semibold text-amber-300">Warning: Snapshot is stale</p>
+                <p className="mt-0.5 text-amber-200/80">
+                  The selected snapshot timestamp is {nseTimestamp || "unavailable"} and exceeds freshness rules. Exported workbooks will be explicitly labelled as stale historical data.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Symbol + expiry */}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">

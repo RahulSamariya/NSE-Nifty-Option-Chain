@@ -6,11 +6,13 @@ import { ArrowDownRight, ArrowUpRight, Crosshair, DollarSign, Gauge } from "luci
 
 interface MetricsBarProps {
   symbol: string;
-  spot: number;
+  spot: number | null;
   pcr: number | null;
   maxPain: number | null;
   totalCeOi: number;
   totalPeOi: number;
+  isStale?: boolean;
+  isHistoricalExpanded?: boolean;
 }
 
 export function MetricsBar({
@@ -20,6 +22,8 @@ export function MetricsBar({
   maxPain,
   totalCeOi,
   totalPeOi,
+  isStale = false,
+  isHistoricalExpanded = false,
 }: MetricsBarProps) {
   const pcrValue = pcr ?? 0;
   const pcrSentiment =
@@ -31,6 +35,8 @@ export function MetricsBar({
       ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
       : "text-amber-400 bg-amber-500/10 border-amber-500/20";
 
+  const isStaleCollapsed = isStale && !isHistoricalExpanded;
+
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-3 my-4">
       {/* Spot Price */}
@@ -40,11 +46,32 @@ export function MetricsBar({
           <DollarSign className="w-4 h-4 text-emerald-400" />
         </div>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-100">
-            {formatIndian(spot, 2)}
-          </span>
+          {isStaleCollapsed ? (
+            <span className="text-xl md:text-2xl font-bold tracking-tight text-amber-400">
+              Unavailable
+            </span>
+          ) : (
+            <>
+              <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-100">
+                {spot !== null && spot > 0 ? formatIndian(spot, 2) : "Unavailable"}
+              </span>
+              {isHistoricalExpanded && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">
+                  Historical
+                </span>
+              )}
+            </>
+          )}
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">Underlying Spot Index</div>
+        <div className="text-[11px] text-zinc-500 mt-1">
+          {isStaleCollapsed
+            ? "Data Stale — Feed Paused"
+            : spot === null
+            ? "Not provided in CSV"
+            : isHistoricalExpanded
+            ? "Historical Spot Index"
+            : "Underlying Spot Index"}
+        </div>
       </div>
 
       {/* PCR (OI) */}
@@ -54,14 +81,35 @@ export function MetricsBar({
           <Gauge className="w-4 h-4 text-sky-400" />
         </div>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-100">
-            {pcr !== null ? pcr.toFixed(2) : "-"}
-          </span>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${pcrColor}`}>
-            {pcrSentiment}
-          </span>
+          {isStaleCollapsed ? (
+            <>
+              <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-500">
+                —
+              </span>
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                Stale
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-100">
+                {pcr !== null ? pcr.toFixed(2) : "-"}
+              </span>
+              {isHistoricalExpanded ? (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">
+                  Historical
+                </span>
+              ) : (
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${pcrColor}`}>
+                  {pcrSentiment}
+                </span>
+              )}
+            </>
+          )}
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">Put-Call Sentiment Ratio</div>
+        <div className="text-[11px] text-zinc-500 mt-1">
+          {isStaleCollapsed ? "Data Stale — Feed Paused" : "Put-Call Sentiment Ratio"}
+        </div>
       </div>
 
       {/* Max Pain Strike */}
@@ -71,11 +119,26 @@ export function MetricsBar({
           <Crosshair className="w-4 h-4 text-purple-400" />
         </div>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-xl md:text-2xl font-bold tracking-tight text-purple-300">
-            {maxPain ? formatIndian(maxPain) : "-"}
-          </span>
+          {isStaleCollapsed ? (
+            <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-500">
+              —
+            </span>
+          ) : (
+            <>
+              <span className="text-xl md:text-2xl font-bold tracking-tight text-purple-300">
+                {maxPain ? formatIndian(maxPain) : "-"}
+              </span>
+              {isHistoricalExpanded && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">
+                  Historical
+                </span>
+              )}
+            </>
+          )}
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">Minimum Buyer Payoff</div>
+        <div className="text-[11px] text-zinc-500 mt-1">
+          {isStaleCollapsed ? "Data Stale — Feed Paused" : "Minimum Buyer Payoff"}
+        </div>
       </div>
 
       {/* Total CE Open Interest */}
@@ -85,11 +148,26 @@ export function MetricsBar({
           <ArrowDownRight className="w-4 h-4" />
         </div>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-xl md:text-2xl font-bold tracking-tight text-rose-300">
-            {formatIndian(totalCeOi)}
-          </span>
+          {isStaleCollapsed ? (
+            <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-500">
+              —
+            </span>
+          ) : (
+            <>
+              <span className="text-xl md:text-2xl font-bold tracking-tight text-rose-300">
+                {formatIndian(totalCeOi)}
+              </span>
+              {isHistoricalExpanded && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">
+                  Historical
+                </span>
+              )}
+            </>
+          )}
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">Call Writers Resistance</div>
+        <div className="text-[11px] text-zinc-500 mt-1">
+          {isStaleCollapsed ? "Data Stale — Feed Paused" : "Call Writers Resistance"}
+        </div>
       </div>
 
       {/* Total PE Open Interest */}
@@ -99,11 +177,26 @@ export function MetricsBar({
           <ArrowUpRight className="w-4 h-4" />
         </div>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-xl md:text-2xl font-bold tracking-tight text-emerald-300">
-            {formatIndian(totalPeOi)}
-          </span>
+          {isStaleCollapsed ? (
+            <span className="text-xl md:text-2xl font-bold tracking-tight text-zinc-500">
+              —
+            </span>
+          ) : (
+            <>
+              <span className="text-xl md:text-2xl font-bold tracking-tight text-emerald-300">
+                {formatIndian(totalPeOi)}
+              </span>
+              {isHistoricalExpanded && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">
+                  Historical
+                </span>
+              )}
+            </>
+          )}
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">Put Writers Support</div>
+        <div className="text-[11px] text-zinc-500 mt-1">
+          {isStaleCollapsed ? "Data Stale — Feed Paused" : "Put Writers Support"}
+        </div>
       </div>
     </div>
   );

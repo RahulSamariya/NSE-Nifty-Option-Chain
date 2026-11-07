@@ -6,7 +6,7 @@ import { formatIndian } from "@/lib/supabase";
 
 interface OptionChainTableProps {
   rows: StrikeRow[];
-  spot: number;
+  spot: number | null;
   strikeRange: number; // 0 for all, 10, 20, 30
 }
 
@@ -17,7 +17,7 @@ export function OptionChainTable({
 }: OptionChainTableProps) {
   // Find ATM strike (closest to spot)
   const atmStrike = useMemo(() => {
-    if (!rows || rows.length === 0 || !spot) return null;
+    if (!rows || rows.length === 0 || spot === null || spot <= 0) return null;
     let closest = rows[0].STRIKE;
     let minDiff = Math.abs(closest - spot);
 
@@ -110,9 +110,9 @@ export function OptionChainTable({
           {/* Table Body */}
           <tbody className="divide-y divide-zinc-800/50 font-mono">
             {displayedRows.map((row) => {
-              const isAtm = row.STRIKE === atmStrike;
-              const isCeItm = spot !== null && row.STRIKE < spot;
-              const isPeItm = spot !== null && row.STRIKE > spot;
+              const isAtm = atmStrike !== null && row.STRIKE === atmStrike;
+              const isCeItm = spot !== null && spot > 0 && row.STRIKE < spot;
+              const isPeItm = spot !== null && spot > 0 && row.STRIKE > spot;
 
               return (
                 <tr

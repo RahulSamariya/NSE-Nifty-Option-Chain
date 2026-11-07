@@ -31,7 +31,7 @@ export interface StrikeRow {
 export interface OptionChainRecord {
   symbol: string;
   expiry: string;
-  spot: number;
+  spot: number | null;
   pcr: number | null;
   max_pain: number | null;
   total_ce_oi: number;
@@ -40,6 +40,14 @@ export interface OptionChainRecord {
   updated_at: string;
   raw_data: StrikeRow[];
 }
+
+/** Server-originated snapshot from Supabase; strictly requires a positive spot. */
+export interface ServerOptionChainRecord extends OptionChainRecord {
+  spot: number;
+}
+
+/** Imported CSV snapshot; spot is optional (null when missing). */
+export type ImportedOptionChainRecord = OptionChainRecord;
 
 export interface OptionChainHistoryPoint {
   id: number;

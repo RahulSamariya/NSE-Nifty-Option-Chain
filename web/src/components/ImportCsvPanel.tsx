@@ -246,7 +246,9 @@ export function ImportCsvPanel({
             </div>
             <div>
               <span className="text-emerald-300/70">Spot</span>
-              <p className="font-semibold text-emerald-100">{state.meta.spot.toLocaleString("en-IN")}</p>
+              <p className="font-semibold text-emerald-100">
+                {state.meta.spot !== null ? state.meta.spot.toLocaleString("en-IN") : "Unavailable (not in file)"}
+              </p>
             </div>
             <div>
               <span className="text-emerald-300/70">Imported at</span>

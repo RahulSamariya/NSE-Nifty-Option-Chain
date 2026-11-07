@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { OptionChainHistoryPoint, OptionChainRecord } from "@/types/option-chain";
+import type { OptionChainHistoryPoint, ServerOptionChainRecord } from "@/types/option-chain";
 import { expiryVariants } from "./api-validation";
 import {
   getSnapshotFreshness,
@@ -18,7 +18,7 @@ export const MAX_EXPORT_STRIKES = 2000;
 export const MAX_CHAIN_STRIKES = 5000;
 
 export interface LoadedSnapshot {
-  record: OptionChainRecord;
+  record: ServerOptionChainRecord;
   freshness: SnapshotFreshness;
   readAt: Date;
 }

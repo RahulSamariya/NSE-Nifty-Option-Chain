@@ -19,7 +19,7 @@ import { formatIndian } from "@/lib/supabase";
 
 interface ChartsViewProps {
   rows: StrikeRow[];
-  spot: number;
+  spot: number | null;
   history?: OptionChainHistoryPoint[];
 }
 
@@ -57,7 +57,7 @@ export function ChartsView({ rows, spot, history = [] }: ChartsViewProps) {
             </p>
           </div>
           <div className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-300">
-            Spot: <span className="font-bold text-emerald-400">{formatIndian(spot, 2)}</span>
+            Spot: <span className="font-bold text-emerald-400">{spot !== null && spot > 0 ? formatIndian(spot, 2) : "Unavailable"}</span>
           </div>
         </div>
 
@@ -81,7 +81,7 @@ export function ChartsView({ rows, spot, history = [] }: ChartsViewProps) {
                 formatter={(val) => [formatIndian(val as number), ""]}
               />
               <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }} />
-              {spot && (
+              {spot !== null && spot > 0 && (
                 <ReferenceLine
                   x={Math.round(spot / 50) * 50}
                   stroke="#38bdf8"

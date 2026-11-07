@@ -463,12 +463,14 @@ describe("parseNseOptionChainCsv - rejections", () => {
     expect(result.error).toMatch(/does not cover/);
   });
 
-  it("rejects a file without the underlying value rather than inventing spot", () => {
+  it("accepts a file without the underlying value and sets spot to null rather than inventing spot", () => {
     const result = parse(fx.NO_SPOT_CSV);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toMatch(/underlying index value/);
-    expect(result.error).toMatch(/will not invent a spot price/);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.record.spot).toBeNull();
+    expect(result.meta.spot).toBeNull();
+    expect(result.record.symbol).toBe("NIFTY");
+    expect(result.record.expiry).toBe("29-Oct-2026");
   });
 
   it("rejects a file without an expiry", () => {
@@ -480,7 +482,7 @@ describe("parseNseOptionChainCsv - rejections", () => {
 
   it("never labels an unsupported-symbol file as simply unparseable", () => {
     // Guards the plain-language promise: the message must guide, not just fail.
-    for (const text of [fx.UNSUPPORTED_SYMBOL_CSV, fx.NO_SPOT_CSV, fx.NO_EXPIRY_CSV]) {
+    for (const text of [fx.UNSUPPORTED_SYMBOL_CSV, fx.NO_EXPIRY_CSV, fx.NO_SYMBOL_CSV]) {
       const result = parse(text);
       expect(result.ok).toBe(false);
       if (result.ok) return;

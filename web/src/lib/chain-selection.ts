@@ -59,15 +59,16 @@ function nearestIndex<T extends { STRIKE: number }>(rows: T[], spot: number): nu
 
 /**
  * Window of `2 * radius + 1` strikes around the strike closest to spot, clamped
- * at the ends of the chain. `radius === 0` returns everything.
+ * at the ends of the chain. `radius === 0` returns everything. When spot is null
+ * or missing, ATM filtering cannot be calculated and all strikes are returned.
  */
 export function selectStrikes<T extends { STRIKE: number }>(
   rows: T[],
-  spot: number,
+  spot: number | null,
   range: StrikeRange,
 ): T[] {
   const radius = strikeRadius(range);
-  if (radius === 0 || rows.length === 0) return [...rows];
+  if (radius === 0 || rows.length === 0 || spot === null || spot <= 0) return [...rows];
 
   const sorted = [...rows].sort((a, b) => Number(a.STRIKE) - Number(b.STRIKE));
   const atm = nearestIndex(sorted, spot);
