@@ -1,4 +1,4 @@
-import type { OptionChainRecord, StrikeRow } from "@/types/option-chain";
+import type { OptionChainHistoryPoint, OptionChainRecord, StrikeRow } from "@/types/option-chain";
 
 export function makeStrike(strike: number, overrides: Partial<StrikeRow> = {}): StrikeRow {
   return {
@@ -48,6 +48,25 @@ export function makeRecord(overrides: Partial<OptionChainRecord> = {}): OptionCh
     nse_timestamp: "23-Oct-2026 15:40:00",
     updated_at: "2026-10-25T09:17:44.856614+00:00",
     raw_data: [makeStrike(19950), makeStrike(20000), makeStrike(20050)],
+    ...overrides,
+  };
+}
+
+/** One intraday history row exactly as `/api/option-chain/history` returns it. */
+export function makeHistoryPoint(
+  overrides: Partial<OptionChainHistoryPoint> = {},
+): OptionChainHistoryPoint {
+  return {
+    id: 100,
+    symbol: "NIFTY",
+    expiry: "09-Nov-2026",
+    spot: 25004.1,
+    pcr: 0.9858,
+    max_pain: 24950,
+    total_ce_oi: 4890804,
+    total_pe_oi: 4821321,
+    nse_timestamp: "09-Nov-2026 14:50:58",
+    created_at: "2026-11-09T09:22:04.568489+00:00",
     ...overrides,
   };
 }

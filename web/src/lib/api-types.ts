@@ -68,6 +68,9 @@ export interface ApiErrorResponse {
   error: { code: string; message: string };
 }
 
+/** Payload of GET /api/health: collector and snapshot evidence, never secrets. */
+export type { HealthPayload as HealthApiResponse } from "./health-status";
+
 /** What the badge shows: the snapshot status, plus transport states.
  * "Imported" is a file the user uploaded in the browser — it is never live. */
 export type UiStatus = SnapshotStatus | "Loading" | "Error" | "Imported";

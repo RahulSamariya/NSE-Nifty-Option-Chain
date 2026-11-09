@@ -5,6 +5,9 @@ import { Header } from "@/components/Header";
 import { MetricsBar } from "@/components/MetricsBar";
 import { OptionChainTable } from "@/components/OptionChainTable";
 import { ChartsView } from "@/components/ChartsView";
+import { SessionPlayback } from "@/components/SessionPlayback";
+import { buildHistorySeries } from "@/lib/history-series";
+import { clampPlaybackIndex } from "@/lib/session-playback";
 import { ExcelPanel } from "@/components/ExcelPanel";
 import { ImportCsvPanel } from "@/components/ImportCsvPanel";
 import {
@@ -56,6 +59,9 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"table" | "charts">("table");
   const [strikeRange, setStrikeRange] = useState<StrikeRange>(DEFAULT_STRIKE_RANGE);
   const [fieldGroups, setFieldGroups] = useState<FieldGroup[]>(DEFAULT_FIELD_GROUPS);
+
+  /** Index the session playback scrubber is pinned to; null = newest sample. */
+  const [playbackIndex, setPlaybackIndex] = useState<number | null>(null);
 
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshMinutes, setRefreshMinutes] = useState<RefreshMinutes>(1);
@@ -249,6 +255,16 @@ export default function Home() {
     return () => guard.abort();
   }, [guard]);
 
+  /** Recorded samples, normalised once for the charts and the scrubber. */
+  const historySeries = useMemo(() => buildHistorySeries(history), [history]);
+
+  /**
+   * The scrub cursor is derived, not corrected in an effect: an untouched one
+   * (null) means "the newest sample", and a stale index from a previous history
+   * load is clamped to whatever is recorded now.
+   */
+  const effectivePlaybackIndex = clampPlaybackIndex(playbackIndex, historySeries.length);
+
   // An imported snapshot wins over whatever the API last returned, but only
   // when it matches the symbol currently selected in the header.
   const visibleData = imported
@@ -287,6 +303,7 @@ export default function Home() {
     setError(null);
     setHistoryError(null);
     setShowHistoricalSnapshot(false);
+    setPlaybackIndex(null);
   }, []);
 
   const handleSelectExpiry = useCallback((expiry: string | null) => {
@@ -297,6 +314,7 @@ export default function Home() {
     setError(null);
     setHistoryError(null);
     setShowHistoricalSnapshot(false);
+    setPlaybackIndex(null);
   }, []);
 
   /**
@@ -314,6 +332,7 @@ export default function Home() {
     setError(null);
     setHistoryError(null);
     setShowHistoricalSnapshot(false);
+    setPlaybackIndex(null);
   }, []);
 
   const handleClearImport = useCallback(() => {
@@ -324,6 +343,7 @@ export default function Home() {
     setError(null);
     setHistoryError(null);
     setShowHistoricalSnapshot(false);
+    setPlaybackIndex(null);
   }, []);
 
   /**
@@ -719,11 +739,21 @@ export default function Home() {
                 strikeRange={strikeRadiusValue}
               />
             ) : (
-              <ChartsView
-                rows={visibleData.raw_data}
-                spot={visibleData.spot}
-                history={history}
-              />
+              <>
+                {historySeries.length > 1 && (
+                  <SessionPlayback
+                    series={historySeries}
+                    activeIndex={effectivePlaybackIndex}
+                    onChange={setPlaybackIndex}
+                  />
+                )}
+                <ChartsView
+                  rows={visibleData.raw_data}
+                  spot={visibleData.spot}
+                  series={historySeries}
+                  playbackIndex={effectivePlaybackIndex}
+                />
+              </>
             )}
           </div>
         ) : visibleData && isStale && !showHistoricalSnapshot ? (

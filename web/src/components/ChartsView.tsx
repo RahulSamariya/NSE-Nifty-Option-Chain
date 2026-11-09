@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useMemo } from "react";
-import { StrikeRow, OptionChainHistoryPoint } from "@/types/option-chain";
+import { StrikeRow } from "@/types/option-chain";
+import type { HistorySeriesPoint } from "@/lib/history-series";
+import { seriesKeyToTime } from "@/lib/history-series";
 import {
   BarChart,
   Bar,
@@ -20,10 +22,25 @@ import { formatIndian } from "@/lib/supabase";
 interface ChartsViewProps {
   rows: StrikeRow[];
   spot: number | null;
-  history?: OptionChainHistoryPoint[];
+  /** Recorded intraday samples, oldest first; empty when history is unavailable. */
+  series?: HistorySeriesPoint[];
+  /** Index of the sample the session playback scrubber is showing. */
+  playbackIndex?: number | null;
 }
 
-export function ChartsView({ rows, spot, history = [] }: ChartsViewProps) {
+const TOOLTIP_STYLE = {
+  backgroundColor: "#09090b",
+  borderColor: "#27272a",
+  borderRadius: "8px",
+  fontSize: "12px",
+} as const;
+
+export function ChartsView({
+  rows,
+  spot,
+  series = [],
+  playbackIndex = null,
+}: ChartsViewProps) {
   // Format rows for Recharts
   const chartData = useMemo(() => {
     if (!rows || rows.length === 0) return [];
@@ -42,6 +59,12 @@ export function ChartsView({ rows, spot, history = [] }: ChartsViewProps) {
         putLtp: r.PE_LTP ?? 0,
       }));
   }, [rows]);
+
+  /** Sample the playback scrubber is pinned to; null when it is not active. */
+  const activeSample =
+    playbackIndex === null || playbackIndex === undefined
+      ? null
+      : (series[Math.min(Math.max(playbackIndex, 0), series.length - 1)] ?? null);
 
   return (
     <div className="space-y-6 my-4">
@@ -181,59 +204,196 @@ export function ChartsView({ rows, spot, history = [] }: ChartsViewProps) {
         </div>
       </div>
 
-      {/* Chart 4: Historical Intraday Timeline (Spot vs PCR) */}
-      {history.length > 0 && (
-        <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 shadow-lg">
-          <h3 className="text-sm font-bold text-zinc-100 mb-1">
-            Intraday Spot vs. PCR Timeline
-          </h3>
-          <p className="text-xs text-zinc-400 mb-3">
-            Correlating price action with sentiment shifts throughout the trading day
-          </p>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={history} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                <XAxis dataKey="nse_timestamp" stroke="#71717a" fontSize={11} />
-                <YAxis yAxisId="spot" stroke="#38bdf8" fontSize={11} domain={["auto", "auto"]} />
-                <YAxis
-                  yAxisId="pcr"
-                  orientation="right"
-                  stroke="#fbbf24"
-                  fontSize={11}
-                  domain={["auto", "auto"]}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#09090b",
-                    borderColor: "#27272a",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: "12px" }} />
-                <Line
-                  yAxisId="spot"
-                  type="monotone"
-                  dataKey="spot"
-                  name="Spot Price"
-                  stroke="#38bdf8"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  yAxisId="pcr"
-                  type="monotone"
-                  dataKey="pcr"
-                  name="PCR (OI)"
-                  stroke="#fbbf24"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+      {/* Intraday block: every sample below was recorded by the collector. */}
+      {series.length > 0 && (
+        <>
+          {/* Chart 4: Historical Intraday Timeline (Spot vs PCR) */}
+          <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 shadow-lg">
+            <h3 className="text-sm font-bold text-zinc-100 mb-1">
+              Intraday Spot vs. PCR Timeline
+            </h3>
+            <p className="text-xs text-zinc-400 mb-3">
+              Correlating price action with sentiment shifts throughout the trading day
+            </p>
+            <div className="h-64 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={series} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis
+                    dataKey="key"
+                    tickFormatter={seriesKeyToTime}
+                    interval="preserveStartEnd"
+                    minTickGap={40}
+                    stroke="#71717a"
+                    fontSize={11}
+                  />
+                  <YAxis yAxisId="spot" stroke="#38bdf8" fontSize={11} domain={["auto", "auto"]} />
+                  <YAxis
+                    yAxisId="pcr"
+                    orientation="right"
+                    stroke="#fbbf24"
+                    fontSize={11}
+                    domain={["auto", "auto"]}
+                  />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    labelFormatter={(label) => seriesKeyToTime(String(label))}
+                  />
+                  <Legend wrapperStyle={{ fontSize: "12px" }} />
+                  {activeSample && (
+                    <ReferenceLine
+                      yAxisId="spot"
+                      x={activeSample.key}
+                      stroke="#a855f7"
+                      strokeDasharray="4 4"
+                      label={{ value: activeSample.time, fill: "#a855f7", fontSize: 10 }}
+                    />
+                  )}
+                  <Line
+                    yAxisId="spot"
+                    type="monotone"
+                    dataKey="spot"
+                    name="Spot Price"
+                    stroke="#38bdf8"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                  <Line
+                    yAxisId="pcr"
+                    type="monotone"
+                    dataKey="pcr"
+                    name="PCR (OI)"
+                    stroke="#fbbf24"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </div>
-        </div>
+
+          {/* Grid: Max Pain drift & total open interest build-up */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Chart 5: Max Pain vs Spot */}
+            <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 shadow-lg">
+              <h3 className="text-sm font-bold text-zinc-100 mb-1">
+                Max Pain vs. Spot
+              </h3>
+              <p className="text-xs text-zinc-400 mb-3">
+                Where expiry pain settles as price drifts through the session
+              </p>
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={series} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                    <XAxis
+                      dataKey="key"
+                      tickFormatter={seriesKeyToTime}
+                      interval="preserveStartEnd"
+                      minTickGap={40}
+                      stroke="#71717a"
+                      fontSize={11}
+                    />
+                    <YAxis stroke="#71717a" fontSize={11} domain={["auto", "auto"]} />
+                    <Tooltip
+                      contentStyle={TOOLTIP_STYLE}
+                      labelFormatter={(label) => seriesKeyToTime(String(label))}
+                      formatter={(value) => [formatIndian(value as number), ""]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: "12px" }} />
+                    {activeSample && (
+                      <ReferenceLine
+                        x={activeSample.key}
+                        stroke="#a855f7"
+                        strokeDasharray="4 4"
+                        label={{ value: activeSample.time, fill: "#a855f7", fontSize: 10 }}
+                      />
+                    )}
+                    <Line
+                      type="monotone"
+                      dataKey="spot"
+                      name="Spot"
+                      stroke="#38bdf8"
+                      strokeWidth={2}
+                      dot={false}
+                      connectNulls
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="maxPain"
+                      name="Max Pain"
+                      stroke="#f43f5e"
+                      strokeWidth={2}
+                      strokeDasharray="6 3"
+                      dot={false}
+                      connectNulls
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Chart 6: Total Open Interest (CE vs PE) */}
+            <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4 shadow-lg">
+              <h3 className="text-sm font-bold text-zinc-100 mb-1">
+                Total Open Interest (CE vs PE)
+              </h3>
+              <p className="text-xs text-zinc-400 mb-3">
+                Contract build-up across the session: writing shows up as a rising line
+              </p>
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={series} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                    <XAxis
+                      dataKey="key"
+                      tickFormatter={seriesKeyToTime}
+                      interval="preserveStartEnd"
+                      minTickGap={40}
+                      stroke="#71717a"
+                      fontSize={11}
+                    />
+                    <YAxis
+                      stroke="#71717a"
+                      fontSize={11}
+                      tickFormatter={(value) => formatIndian(value as number)}
+                    />
+                    <Tooltip
+                      contentStyle={TOOLTIP_STYLE}
+                      labelFormatter={(label) => seriesKeyToTime(String(label))}
+                      formatter={(value) => [formatIndian(value as number), ""]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: "12px" }} />
+                    {activeSample && (
+                      <ReferenceLine
+                        x={activeSample.key}
+                        stroke="#a855f7"
+                        strokeDasharray="4 4"
+                        label={{ value: activeSample.time, fill: "#a855f7", fontSize: 10 }}
+                      />
+                    )}
+                    <Line
+                      type="monotone"
+                      dataKey="ceOi"
+                      name="Total CE OI"
+                      stroke="#f43f5e"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="peOi"
+                      name="Total PE OI"
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

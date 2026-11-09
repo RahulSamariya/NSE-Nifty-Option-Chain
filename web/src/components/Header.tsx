@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { Activity, FileSpreadsheet, RefreshCw, TrendingUp } from "lucide-react";
+import Link from "next/link";
+import { Activity, FileSpreadsheet, HeartPulse, RefreshCw, TrendingUp } from "lucide-react";
 import type { UiStatus } from "@/lib/api-types";
 
 interface HeaderProps {
@@ -105,6 +106,15 @@ export function Header({
             />
             {status}
           </div>
+
+          <Link
+            href="/status"
+            title="Collector, database and snapshot health"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-zinc-100 border border-zinc-800 text-xs font-semibold transition-colors"
+          >
+            <HeartPulse className="w-4 h-4" />
+            Status
+          </Link>
 
           <button
             onClick={onOpenExcel}
